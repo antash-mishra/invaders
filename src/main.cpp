@@ -1,11 +1,16 @@
 #include "glad/glad.h"
 #include <GLFW/glfw3.h>
-
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <iostream>
+#include <string>
 
 #include "model.h"
 #include "shader.h"
 #include "camera.h"
+#include "stb_image.h"
+
 #include <filesystem>
 namespace fs = std::filesystem;
 
@@ -38,6 +43,16 @@ float lastX = SCREEN_WIDTH/2.0;
 float lastY = SCREEN_HEIGHT/2.0;
 bool firstMouse = true;
 float fov = 45.0f;
+
+float quadVertices[] = { // vertex attributes for a quad in world space coordinates
+    // positions   // texCoords
+    -0.5f,  0.5f,  0.0f, 1.0f,  // top left
+    -0.5f, -0.5f,  0.0f, 0.0f,  // bottom left
+     0.5f, -0.5f,  1.0f, 0.0f,  // bottom right
+    -0.5f,  0.5f,  0.0f, 1.0f,  // top left
+     0.5f, -0.5f,  1.0f, 0.0f,  // bottom right
+     0.5f,  0.5f,  1.0f, 1.0f   // top right
+};
 
 int main(int argc, char *argv[])
 {
@@ -83,9 +98,73 @@ int main(int argc, char *argv[])
     // Load shaders
     std::string shaderDir = parentDir + "/resources/shaders/";
     Shader playerShader((shaderDir + "playerModel.vs").c_str(), (shaderDir + "playerModel.fs").c_str());
-
+    Shader enemyShader((shaderDir + "enemy.vs").c_str(), (shaderDir + "enemy.fs").c_str());
+    
     // load player model
     Model* player = new Model(parentDir + "/resources/Package/MeteorSlicer.obj");
+
+    // Load enemy
+    unsigned int enemyVAO, enemyVBO;
+    glGenVertexArrays(1, &enemyVAO);
+    glGenBuffers(1, &enemyVBO);
+
+    glBindVertexArray(enemyVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, enemyVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+
+    // unbind the VAO and VBO
+    glBindVertexArray(0);
+
+
+    // Load enemy texture
+    unsigned int enemyTexture;
+    glGenTextures(1, &enemyTexture);
+    glBindTexture(GL_TEXTURE_2D, enemyTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    
+    // Load image, create diffuse texture and generate mipmaps
+    stbi_set_flip_vertically_on_load(false);
+    int width, height, nrChannels;
+
+    unsigned char *data = stbi_load((parentDir + "/resources/spaceship-pack/ship_4.png").c_str(), &width, &height, &nrChannels, 0);
+
+    if (data)
+    {
+        // channel based format of texture
+        GLenum format;  
+        if (nrChannels == 1)
+            format = GL_RED;
+        else if (nrChannels == 3)
+            format = GL_RGB;
+        else if (nrChannels == 4)
+            format = GL_RGBA;
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        std::cout << "Texture loaded successfully " << parentDir + "/resources/spaceship-pack/ship_4.png" << std::endl;
+    }
+    else
+    {
+        std::cout << "Failed to load texture" << std::endl;
+    }
+
+    // Free image data
+    stbi_image_free(data);
+
+    // shader configuration
+    // --------------------
+    playerShader.use();
+    playerShader.setInt("texture_diffuse1", 0);
+    
+    enemyShader.use();
+    enemyShader.setInt("texture_diffuse0", 0);
+
 
     while (!glfwWindowShouldClose(window))
     {
@@ -120,8 +199,23 @@ int main(int argc, char *argv[])
         model = glm::rotate(model, glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
         // model = glm::rotate(model, glm::radians(180.0f), glm::vec3(0.0f, 0.0f, 1.0f));
         playerShader.setMat4("model", model);
-
         player->Draw(playerShader);
+
+        // Draw enemy
+        enemyShader.use();
+        enemyShader.setMat4("view", view);
+        enemyShader.setMat4("projection", projection);
+
+        glm::mat4 enemyModel = glm::mat4(1.0f);
+        enemyModel = glm::translate(enemyModel, glm::vec3(2.0f, 1.0f, 0.0f));
+        enemyModel = glm::scale(enemyModel, glm::vec3(1.0f, 1.0f, 1.0f));
+        enemyShader.setMat4("model", enemyModel);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, enemyTexture);
+        glBindVertexArray(enemyVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
 
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved
         // etc.)
@@ -129,6 +223,10 @@ int main(int argc, char *argv[])
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
+
+    glDeleteVertexArrays(1, &enemyVAO);
+    glDeleteBuffers(1, &enemyVBO);
+    glDeleteTextures(1, &enemyTexture);
 
     glfwTerminate();
     return 0;
