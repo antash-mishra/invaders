@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 
+#include "glm/detail/type_mat.hpp"
 #include "model.h"
 #include "shader.h"
 #include "camera.h"
@@ -17,6 +18,7 @@ namespace fs = std::filesystem;
 // GLFW function declarations
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void processInput(GLFWwindow *window);
+unsigned int loadTexture(const std::string& path);
 
 
 // The Width of the screen
@@ -61,6 +63,17 @@ float quadVertices[] = { // vertex attributes for a quad in world space coordina
     -0.5f,  0.5f,  0.0f, 1.0f,  // top left
      0.5f, -0.5f,  1.0f, 0.0f,  // bottom right
      0.5f,  0.5f,  1.0f, 1.0f   // top right
+};
+
+// Full-screen background quad in Normalized Device Coordinates (-1 to +1)
+float backgroundVerticesNDC[] = {
+    // positions (NDC)  // texCoords (for tiling)
+    -1.0f,  1.0f,       0.0f, 2.0f,  // top left
+    -1.0f, -1.0f,       0.0f, 0.0f,  // bottom left
+     1.0f, -1.0f,       2.0f, 0.0f,  // bottom right
+    -1.0f,  1.0f,       0.0f, 2.0f,  // top left
+     1.0f, -1.0f,       2.0f, 0.0f,  // bottom right
+     1.0f,  1.0f,       2.0f, 2.0f   // top right
 };
 
 int main(int argc, char *argv[])
@@ -108,6 +121,7 @@ int main(int argc, char *argv[])
     std::string shaderDir = parentDir + "/resources/shaders/";
     Shader playerShader((shaderDir + "playerModel.vs").c_str(), (shaderDir + "playerModel.fs").c_str());
     Shader enemyShader((shaderDir + "enemy.vs").c_str(), (shaderDir + "enemy.fs").c_str());
+    Shader backgroundShader((shaderDir + "background.vs").c_str(), (shaderDir + "background.fs").c_str());
 
     // load player model
     Model* player = new Model(parentDir + "/resources/Package/MeteorSlicer.obj");
@@ -123,6 +137,21 @@ int main(int argc, char *argv[])
             index++;
         }
     }
+
+    // Setup background VAO
+    unsigned int backgroundVAO, backgroundVBO;
+    glGenVertexArrays(1, &backgroundVAO);
+    glGenBuffers(1, &backgroundVBO);
+
+    glBindVertexArray(backgroundVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, backgroundVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(backgroundVerticesNDC), backgroundVerticesNDC, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+
 
     // Load enemy with instanced rendering
     unsigned int enemyVAO, enemyVBO, instanceVBO;
@@ -150,43 +179,12 @@ int main(int argc, char *argv[])
     // unbind the VAO and VBO
     glBindVertexArray(0);
 
-
     // Load enemy texture
-    unsigned int enemyTexture;
-    glGenTextures(1, &enemyTexture);
-    glBindTexture(GL_TEXTURE_2D, enemyTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    // Load image, create diffuse texture and generate mipmaps
     stbi_set_flip_vertically_on_load(true);
-    int width, height, nrChannels;
+    unsigned int enemyTexture = loadTexture(parentDir + "/resources/spaceship-pack/ship_4.png");
 
-    unsigned char *data = stbi_load((parentDir + "/resources/spaceship-pack/ship_4.png").c_str(), &width, &height, &nrChannels, 0);
-
-    if (data)
-    {
-        // channel based format of texture
-        GLenum format;
-        if (nrChannels == 1)
-            format = GL_RED;
-        else if (nrChannels == 3)
-            format = GL_RGB;
-        else if (nrChannels == 4)
-            format = GL_RGBA;
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        std::cout << "Texture loaded successfully " << parentDir + "/resources/spaceship-pack/ship_4.png" << std::endl;
-    }
-    else
-    {
-        std::cout << "Failed to load texture" << std::endl;
-    }
-
-    // Free image data
-    stbi_image_free(data);
+    // // Load background texture
+    // unsigned int backgroundTexture = loadTexture(parentDir + "/resources/spaceship-pack/planet_1.png");
 
     // shader configuration
     // --------------------
@@ -196,13 +194,15 @@ int main(int argc, char *argv[])
     enemyShader.use();
     enemyShader.setInt("texture_diffuse0", 0);
 
+    // backgroundShader.use();
+    // backgroundShader.setInt("backgroundTexture", 0);
 
     while (!glfwWindowShouldClose(window))
     {
 
         // calculate delta time
         // --------------------
-        float currentFrame = static_cast<float>(glfwGetTime());;
+        float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
@@ -215,12 +215,24 @@ int main(int argc, char *argv[])
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        playerShader.use();
-        glm::mat4 view = camera.GetViewMatrix();
-        playerShader.setMat4("view", view);
-
         // For 2D game use orthographic projection
+        glm::mat4 view = camera.GetViewMatrix();
         glm::mat4 projection = glm::ortho(-WORLD_HALF_WIDTH, WORLD_HALF_WIDTH, -WORLD_HALF_HEIGHT, WORLD_HALF_HEIGHT, 0.1f, 100.0f);
+
+        // Render background
+        glDisable(GL_DEPTH_TEST);
+        backgroundShader.use();
+        backgroundShader.setFloat("time", currentFrame);
+        backgroundShader.setFloat("alpha", 0.3f);
+
+        glActiveTexture(GL_TEXTURE0);
+        // glBindTexture(GL_TEXTURE_2D, backgroundTexture);
+        glBindVertexArray(backgroundVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+
+        playerShader.use();
+        playerShader.setMat4("view", view);
         playerShader.setMat4("projection", projection);
 
         glm::mat4 model = glm::mat4(1.0f);
@@ -294,4 +306,40 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
     // make sure the viewport matches the new window dimensions; note that width and
     // height will be significantly larger than specified on retina displays.
     glViewport(0, 0, width, height);
+}
+
+unsigned int loadTexture(const std::string& path)
+{
+    unsigned int textureID;
+    glGenTextures(1, &textureID);
+
+    int width, height, nrChannels;
+    unsigned char *data = stbi_load(path.c_str(), &width, &height, &nrChannels, 0);
+
+    if (data) {
+        GLenum format;
+        if (nrChannels == 1)
+            format = GL_RED;
+        else if (nrChannels == 3)
+            format = GL_RGB;
+        else if (nrChannels == 4)
+            format = GL_RGBA;
+
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        // Set texture wrapping to repeat for tiling effect
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        std::cout << "Texture loaded successfully: " << path << std::endl;
+    } else {
+        std::cout << "Failed to load texture: " << path << std::endl;
+    }
+
+    stbi_image_free(data);
+    return textureID;
 }
