@@ -24,19 +24,28 @@ const unsigned int SCREEN_WIDTH = 800;
 // The height of the screen
 const unsigned int SCREEN_HEIGHT = 600;
 
-Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
+Camera camera(glm::vec3(0.0f, 0.0f, 5.0f));
 
 // Time
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
 // Player position
-glm::vec3 playerPosition = glm::vec3(0.0f, 0.0f, 0.0f);
+glm::vec3 playerPosition = glm::vec3(0.0f, -2.0f, 0.0f);
 const float playerSpeed = 2.0f;
 
 // Screen bounds in world space (for orthographic projection)
 const float WORLD_HALF_WIDTH = 4.0f;    // Half the orthographic width
 const float WORLD_HALF_HEIGHT = 3.0f;   // Half the orthographic height
+
+// Enemy formation constants (Galaxian style)
+const int ENEMIES_PER_ROW = 10;
+const int ENEMY_ROWS = 3;
+const int TOTAL_ENEMIES = ENEMIES_PER_ROW * ENEMY_ROWS;
+const float ENEMY_SPACING_X = 1.6f;
+const float ENEMY_SPACING_Y = 1.5f;
+const float FORMATION_START_X = -7.5f;
+const float FORMATION_START_Y = 5.7f;   // Top row Y position
 
 // Mouse initial position
 float lastX = SCREEN_WIDTH/2.0;
@@ -99,22 +108,44 @@ int main(int argc, char *argv[])
     std::string shaderDir = parentDir + "/resources/shaders/";
     Shader playerShader((shaderDir + "playerModel.vs").c_str(), (shaderDir + "playerModel.fs").c_str());
     Shader enemyShader((shaderDir + "enemy.vs").c_str(), (shaderDir + "enemy.fs").c_str());
-    
+
     // load player model
     Model* player = new Model(parentDir + "/resources/Package/MeteorSlicer.obj");
 
-    // Load enemy
-    unsigned int enemyVAO, enemyVBO;
+    // Generate enemy formation positions (Galaxian style)
+    glm::vec2 enemyOffsets[TOTAL_ENEMIES];
+    int index = 0;
+    for (int row = 0; row < ENEMY_ROWS; row++) {
+        for (int col = 0; col < ENEMIES_PER_ROW; col++) {
+            float x = FORMATION_START_X + col * ENEMY_SPACING_X;
+            float y = FORMATION_START_Y - row * ENEMY_SPACING_Y;
+            enemyOffsets[index] = glm::vec2(x, y);
+            index++;
+        }
+    }
+
+    // Load enemy with instanced rendering
+    unsigned int enemyVAO, enemyVBO, instanceVBO;
     glGenVertexArrays(1, &enemyVAO);
     glGenBuffers(1, &enemyVBO);
+    glGenBuffers(1, &instanceVBO);
 
     glBindVertexArray(enemyVAO);
+
+    // Vertex data
     glBindBuffer(GL_ARRAY_BUFFER, enemyVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+
+    // Instance data
+    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec2) * TOTAL_ENEMIES, &enemyOffsets[0], GL_STATIC_DRAW);
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glVertexAttribDivisor(2, 1); // Tell OpenGL this is an instanced vertex attribute
 
     // unbind the VAO and VBO
     glBindVertexArray(0);
@@ -128,9 +159,9 @@ int main(int argc, char *argv[])
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    
+
     // Load image, create diffuse texture and generate mipmaps
-    stbi_set_flip_vertically_on_load(false);
+    stbi_set_flip_vertically_on_load(true);
     int width, height, nrChannels;
 
     unsigned char *data = stbi_load((parentDir + "/resources/spaceship-pack/ship_4.png").c_str(), &width, &height, &nrChannels, 0);
@@ -138,7 +169,7 @@ int main(int argc, char *argv[])
     if (data)
     {
         // channel based format of texture
-        GLenum format;  
+        GLenum format;
         if (nrChannels == 1)
             format = GL_RED;
         else if (nrChannels == 3)
@@ -161,7 +192,7 @@ int main(int argc, char *argv[])
     // --------------------
     playerShader.use();
     playerShader.setInt("texture_diffuse1", 0);
-    
+
     enemyShader.use();
     enemyShader.setInt("texture_diffuse0", 0);
 
@@ -191,7 +222,7 @@ int main(int argc, char *argv[])
         // For 2D game use orthographic projection
         glm::mat4 projection = glm::ortho(-WORLD_HALF_WIDTH, WORLD_HALF_WIDTH, -WORLD_HALF_HEIGHT, WORLD_HALF_HEIGHT, 0.1f, 100.0f);
         playerShader.setMat4("projection", projection);
-        
+
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, playerPosition);
         model = glm::scale(model, glm::vec3(0.07f, 0.07f, 0.07f));
@@ -201,20 +232,20 @@ int main(int argc, char *argv[])
         playerShader.setMat4("model", model);
         player->Draw(playerShader);
 
-        // Draw enemy
+        // Draw enemy formation (instanced)
         enemyShader.use();
         enemyShader.setMat4("view", view);
         enemyShader.setMat4("projection", projection);
 
+        // Base transformation for all enemies
         glm::mat4 enemyModel = glm::mat4(1.0f);
-        enemyModel = glm::translate(enemyModel, glm::vec3(2.0f, 1.0f, 0.0f));
-        enemyModel = glm::scale(enemyModel, glm::vec3(1.0f, 1.0f, 1.0f));
+        enemyModel = glm::scale(enemyModel, glm::vec3(0.25f, 0.25f, 0.25f));
         enemyShader.setMat4("model", enemyModel);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, enemyTexture);
         glBindVertexArray(enemyVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, TOTAL_ENEMIES);
         glBindVertexArray(0);
 
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved
@@ -226,6 +257,7 @@ int main(int argc, char *argv[])
 
     glDeleteVertexArrays(1, &enemyVAO);
     glDeleteBuffers(1, &enemyVBO);
+    glDeleteBuffers(1, &instanceVBO);
     glDeleteTextures(1, &enemyTexture);
 
     glfwTerminate();
@@ -237,7 +269,7 @@ int main(int argc, char *argv[])
 // frame and react accordingly
 // ---------------------------------------------------------------------------------------------------------
 void processInput(GLFWwindow *window) {
-    
+
     const float moveSpeed = playerSpeed * deltaTime;
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
@@ -251,7 +283,7 @@ void processInput(GLFWwindow *window) {
         playerPosition.x -= moveSpeed;
     if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         playerPosition.x += moveSpeed;
-    
+
     // Clamp player position to screen bounds
     playerPosition.x = glm::clamp(playerPosition.x, -WORLD_HALF_WIDTH, WORLD_HALF_WIDTH);
     playerPosition.y = glm::clamp(playerPosition.y, -WORLD_HALF_HEIGHT, WORLD_HALF_HEIGHT);
@@ -259,7 +291,7 @@ void processInput(GLFWwindow *window) {
 
 void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 {
-    // make sure the viewport matches the new window dimensions; note that width and 
+    // make sure the viewport matches the new window dimensions; note that width and
     // height will be significantly larger than specified on retina displays.
     glViewport(0, 0, width, height);
 }
