@@ -12,6 +12,10 @@ out vec2 TexCoords;
 void main()
 {
     TexCoords = aTexCoords;
-    vec2 instancePos = aPos + aInstanceOffset;
-    gl_Position = projection * view * model * vec4(instancePos, 0.0, 1.0);
+    
+    // Apply model scaling only to quad vertices, not to instance position
+    vec4 scaledQuad = model * vec4(aPos, 0.0, 1.0);
+    vec2 finalPos = scaledQuad.xy + aInstanceOffset;
+    
+    gl_Position = projection * view * vec4(finalPos, 0.0, 1.0);
 }  

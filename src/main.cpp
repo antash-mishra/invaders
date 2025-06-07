@@ -20,6 +20,7 @@ namespace fs = std::filesystem;
 // GLFW function declarations
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void processInput(GLFWwindow *window);
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 unsigned int loadTexture(const std::string& path);
 
 // ===== ENEMY TRACKING SYSTEM =====
@@ -39,11 +40,33 @@ struct Enemy {
     float animationTimer;
     bool isAttacking;
     glm::vec2 formationPosition; // Original formation position
+    
+    // Curved attack variables (Galaxian style)
+    float attackTimer;           // Time since attack started
+    glm::vec2 attackStartPos;    // Position where attack began
+    glm::vec2 attackTargetPos;   // Target position for attack
+    int attackPattern;           // 0=left curve, 1=right curve, 2=direct
+    float attackSpeed;           // Speed of attack movement
 
     Enemy() : position(0.0f), velocity(0.0f), isAlive(true), type(GRUNT),
               health(1.0f), scale(1.0f), animationTimer(0.0f),
-              isAttacking(false), formationPosition(0.0f) {}
+              isAttacking(false), formationPosition(0.0f),
+              attackTimer(0.0f), attackStartPos(0.0f), attackTargetPos(0.0f),
+              attackPattern(0), attackSpeed(0.7f) {}
 };
+
+// ===== BULLET SYSTEM =====
+struct Bullet {
+    glm::vec2 position;
+    glm::vec2 velocity;
+    bool isActive;
+    
+    Bullet() : position(0.0f), velocity(0.0f), isActive(false) {}
+};
+
+const int MAX_BULLETS = 10;  // Maximum bullets on screen
+const float BULLET_SPEED = 6.0f;  // Speed of bullet movement
+std::vector<Bullet> bullets(MAX_BULLETS);
 
 
 // The Width of the screen
@@ -65,17 +88,25 @@ const float playerSpeed = 2.0f;
 const float WORLD_HALF_WIDTH = 4.0f;    // Half the orthographic width
 const float WORLD_HALF_HEIGHT = 3.0f;   // Half the orthographic height
 
-// Enemy formation constants (Galaxian style)
+// Enemy formation constants (Galaxian style) - adjusted to fit within orthographic bounds
 const int ENEMIES_PER_ROW = 10;
 const int ENEMY_ROWS = 3;
 const int TOTAL_ENEMIES = ENEMIES_PER_ROW * ENEMY_ROWS;
-const float ENEMY_SPACING_X = 1.6f;
-const float ENEMY_SPACING_Y = 1.5f;
-const float FORMATION_START_X = -7.5f;
-const float FORMATION_START_Y = 5.7f;   // Top row Y position
+const float ENEMY_SPACING_X = 0.5f;      // Fits 10 enemies in [-4.0, 4.0] range
+const float ENEMY_SPACING_Y = 0.5f;      // Fits 3 rows in upper bounds  
+const float FORMATION_START_X = -3.0f;  // Centers formation in X bounds
+const float FORMATION_START_Y = 2.0f;    // Positions formation in upper Y area
 
 std::vector<Enemy> enemies(TOTAL_ENEMIES);
 std::vector<glm::vec2> aliveEnemyPositions;
+
+// Attack timing control
+float lastAttackTime = 0.0f;
+const float ATTACK_INTERVAL = 2.0f;  // Time between attacks (2 seconds)
+
+// Bullet timing control
+float lastBulletTime = 0.0f;
+const float BULLET_COOLDOWN = 0.25f;  // 0.25 seconds between bullets
 
 // Mouse initial position
 float lastX = SCREEN_WIDTH/2.0;
@@ -105,6 +136,38 @@ float backgroundVerticesNDC[] = {
 };
 
 
+// Calculate curved attack position using Bezier curves
+glm::vec2 calculateCurvedAttackPosition(const Enemy& enemy) {
+    float t = enemy.attackTimer * enemy.attackSpeed * 0.3f; // Progress along path
+    
+    if (t <= 1.0f) {
+        glm::vec2 start = enemy.attackStartPos;
+        glm::vec2 target = enemy.attackTargetPos;
+        
+        // Create curved path with control points
+        glm::vec2 controlPoint;
+        
+        if (enemy.attackPattern == 0) { // Left curve
+            controlPoint = glm::vec2(start.x - 2.0f, (start.y + target.y) * 0.5f);
+        } else if (enemy.attackPattern == 1) { // Right curve  
+            controlPoint = glm::vec2(start.x + 2.0f, (start.y + target.y) * 0.5f);
+        } else { // Direct path with slight curve
+            controlPoint = glm::vec2((start.x + target.x) * 0.5f, start.y - 0.5f);
+        }
+        
+        // Quadratic Bezier curve: P(t) = (1-t)²P₀ + 2(1-t)tP₁ + t²P₂
+        float invT = 1.0f - t;
+        return invT * invT * start + 
+               2.0f * invT * t * controlPoint + 
+               t * t * target;
+    } else {
+        // Continue moving straight down from target position (no jitter)
+        float extraTime = (t - 1.0f) / (enemy.attackSpeed * 0.3f);
+        return glm::vec2(enemy.attackTargetPos.x, 
+                        enemy.attackTargetPos.y - enemy.attackSpeed * extraTime);
+    }
+}
+
 void initializeEnemies() {
     int index = 0;
     for (int row=0; row<ENEMY_ROWS; row++) {
@@ -127,9 +190,48 @@ void initializeEnemies() {
     }
 }
 
+// Create a new bullet at player position (from spaceship tip)
+void createBullet() {
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        if (!bullets[i].isActive) {
+            // Fire from the tip/front of the spaceship
+            // Since spaceship is rotated 90 degrees, the "tip" is in the +Y direction
+            bullets[i].position = glm::vec2(playerPosition.x, playerPosition.y + 0.15f); // From spaceship tip
+            bullets[i].velocity = glm::vec2(0.0f, BULLET_SPEED); // Move upward
+            bullets[i].isActive = true;
+            return; // Exit immediately after creating one bullet
+        }
+    }
+}
+
+// Update all active bullets
+void updateBullets(float deltaTime) {
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        if (bullets[i].isActive) {
+            // Move bullet upward
+            bullets[i].position += bullets[i].velocity * deltaTime;
+            
+            // Deactivate bullet if it goes off screen
+            if (bullets[i].position.y > WORLD_HALF_HEIGHT + 1.0f) {
+                bullets[i].isActive = false;
+            }
+        }
+    }
+}
+
 void updateEnemies(float deltaTime) {
     // Update alive enemies list for rendering
     aliveEnemyPositions.clear();
+    
+    float currentTime = glfwGetTime();
+    int attackingCount = 0;
+
+    // Count currently attacking enemies
+    for (int i = 0; i < TOTAL_ENEMIES; i++) {
+        if (enemies[i].isAlive && enemies[i].isAttacking) {
+            attackingCount++;
+        }
+    }
 
     for (int i = 0; i < TOTAL_ENEMIES; i++) {
         if (!enemies[i].isAlive) continue;
@@ -138,30 +240,79 @@ void updateEnemies(float deltaTime) {
         enemies[i].animationTimer += deltaTime;
 
         // Formation movement (side-to-side like Galaxian)
-        float formationSway = sin(glfwGetTime() * 0.5f) * 0.3f;
+        float formationSway = sin(currentTime * 0.5f) * 0.3f;
         enemies[i].position.x = enemies[i].formationPosition.x + formationSway;
 
-        // Individual enemy attack behavior (random chance)
-        if (!enemies[i].isAttacking && rand() % 10000 < 1) { // Very low chance
-            enemies[i].isAttacking = true;
-            enemies[i].velocity.y = -1.5f; // Move down towards player
-            enemies[i].velocity.x = (rand() % 200 - 100) / 100.0f; // Random x movement
+        // Start dual attack if enough time has passed and no enemies are attacking
+        if (!enemies[i].isAttacking && attackingCount == 0 && 
+            (currentTime - lastAttackTime) >= ATTACK_INTERVAL) {
+            
+            // Find leftmost and rightmost alive enemies
+            int leftmostIndex = -1, rightmostIndex = -1;
+            float leftmostX = 999.0f, rightmostX = -999.0f;
+            
+            for (int j = 0; j < TOTAL_ENEMIES; j++) {
+                if (enemies[j].isAlive && !enemies[j].isAttacking) {
+                    if (enemies[j].formationPosition.x < leftmostX) {
+                        leftmostX = enemies[j].formationPosition.x;
+                        leftmostIndex = j;
+                    }
+                    if (enemies[j].formationPosition.x > rightmostX) {
+                        rightmostX = enemies[j].formationPosition.x;
+                        rightmostIndex = j;
+                    }
+                }
+            }
+            
+            // Start attack for both leftmost and rightmost enemies
+            if (i == leftmostIndex || (i == rightmostIndex && leftmostIndex != rightmostIndex)) {
+                enemies[i].isAttacking = true;
+                enemies[i].attackTimer = 0.0f;
+                enemies[i].attackStartPos = enemies[i].position;
+                
+                // Set target position (toward player with some randomness)
+                enemies[i].attackTargetPos = glm::vec2(
+                    playerPosition.x + (rand() % 200 - 100) / 300.0f, // Some randomness
+                    playerPosition.y - 1.0f // Slightly below player
+                );
+                
+                // Choose attack pattern based on position
+                if (i == leftmostIndex) {
+                    enemies[i].attackPattern = 1; // Right curve from left side
+                } else {
+                    enemies[i].attackPattern = 0; // Left curve from right side
+                }
+                
+                enemies[i].attackSpeed = 0.8f + (rand() % 100) / 300.0f; // Vary speed
+                
+                if (i == leftmostIndex) {
+                    lastAttackTime = currentTime; // Set timer only once
+                }
+            }
         }
 
-        // Update attacking enemies
+        // Update attacking enemies with curved motion
         if (enemies[i].isAttacking) {
-            enemies[i].position += enemies[i].velocity * deltaTime;
-
-            // Return to formation if enemy goes too low
-            if (enemies[i].position.y < -8.0f) {
+            enemies[i].attackTimer += deltaTime;
+            
+            // Check bounds before updating position to prevent jitter
+            glm::vec2 newPosition = calculateCurvedAttackPosition(enemies[i]);
+            
+            // Destroy enemy if it would go out of bounds (don't respawn)
+            if (newPosition.y < -4.0f || 
+                newPosition.x < -5.0f || newPosition.x > 5.0f) {
+                enemies[i].isAlive = false; // Destroy permanently
                 enemies[i].isAttacking = false;
-                enemies[i].position = enemies[i].formationPosition;
-                enemies[i].velocity = glm::vec2(0.0f, 0.0f);
+            } else {
+                // Only update position if within bounds
+                enemies[i].position = newPosition;
             }
         }
 
         // Add to alive positions for rendering
-        aliveEnemyPositions.push_back(enemies[i].position);
+        if (enemies[i].isAlive) {
+            aliveEnemyPositions.push_back(enemies[i].position);
+        }
     }
 }
 
@@ -186,6 +337,7 @@ int main(int argc, char *argv[])
 
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetKeyCallback(window, key_callback);  // Register key callback for precise single-shot detection
     // glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
         // glad: load all OpenGL function pointers
@@ -259,12 +411,29 @@ int main(int argc, char *argv[])
     // unbind the VAO and VBO
     glBindVertexArray(0);
 
+    // Setup bullet VAO (using same quad as enemies)
+    unsigned int bulletVAO, bulletVBO;
+    glGenVertexArrays(1, &bulletVAO);
+    glGenBuffers(1, &bulletVBO);
+
+    glBindVertexArray(bulletVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, bulletVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+
     // Load enemy texture
     stbi_set_flip_vertically_on_load(true);
     unsigned int enemyTexture = loadTexture(parentDir + "/resources/spaceship-pack/ship_4.png");
+    
+    // Load missile texture
+    unsigned int missileTexture = loadTexture(parentDir + "/resources/spaceship-pack/missiles.png");
 
-    // // Load background texture
-    // unsigned int backgroundTexture = loadTexture(parentDir + "/resources/spaceship-pack/planet_1.png");
+    //Load background texture
+    // unsigned int backgroundTexture = loadTexture(parentDir + "/resources/    spaceship-pack/planet_1.png");
 
     // shader configuration
     // --------------------
@@ -291,6 +460,7 @@ int main(int argc, char *argv[])
         processInput(window);
 
         updateEnemies(deltaTime);
+        updateBullets(deltaTime);
 
         // render
         // ------
@@ -301,6 +471,8 @@ int main(int argc, char *argv[])
         // For 2D game use orthographic projection
         glm::mat4 view = camera.GetViewMatrix();
         glm::mat4 projection = glm::ortho(-WORLD_HALF_WIDTH, WORLD_HALF_WIDTH, -WORLD_HALF_HEIGHT, WORLD_HALF_HEIGHT, 0.1f, 100.0f);
+        
+
 
         // Render background
         glDisable(GL_DEPTH_TEST);
@@ -346,8 +518,29 @@ int main(int argc, char *argv[])
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, enemyTexture);
             glBindVertexArray(enemyVAO);
-            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, TOTAL_ENEMIES);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, aliveEnemyPositions.size());
             glBindVertexArray(0);
+        }
+
+        // Draw bullets
+        for (int i = 0; i < MAX_BULLETS; i++) {
+            if (bullets[i].isActive) {
+                enemyShader.use(); // Reuse enemy shader for bullets
+                enemyShader.setMat4("view", view);
+                enemyShader.setMat4("projection", projection);
+
+                // Create transformation matrix for this bullet
+                glm::mat4 bulletModel = glm::mat4(1.0f);
+                bulletModel = glm::translate(bulletModel, glm::vec3(bullets[i].position.x, bullets[i].position.y, 0.0f));
+                bulletModel = glm::scale(bulletModel, glm::vec3(0.8f, 0.5f, 1.0f)); // Smaller and taller for bullet shape
+                enemyShader.setMat4("model", bulletModel);
+
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, missileTexture);
+                glBindVertexArray(bulletVAO);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+                glBindVertexArray(0);
+            }
         }
 
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved
@@ -363,7 +556,10 @@ int main(int argc, char *argv[])
     glDeleteVertexArrays(1, &enemyVAO);
     glDeleteBuffers(1, &enemyVBO);
     glDeleteBuffers(1, &instanceVBO);
+    glDeleteVertexArrays(1, &bulletVAO);
+    glDeleteBuffers(1, &bulletVBO);
     glDeleteTextures(1, &enemyTexture);
+    glDeleteTextures(1, &missileTexture);
 
     glfwTerminate();
     return 0;
@@ -374,7 +570,7 @@ int main(int argc, char *argv[])
 // frame and react accordingly
 // ---------------------------------------------------------------------------------------------------------
 void processInput(GLFWwindow *window) {
-
+    float currentTime = glfwGetTime();
     const float moveSpeed = playerSpeed * deltaTime;
 
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
@@ -389,6 +585,8 @@ void processInput(GLFWwindow *window) {
     if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
         playerPosition.x += moveSpeed;
 
+    // Note: Bullet shooting is now handled in key_callback() for precise single-shot detection
+
     // Clamp player position to screen bounds
     playerPosition.x = glm::clamp(playerPosition.x, -WORLD_HALF_WIDTH, WORLD_HALF_WIDTH);
     playerPosition.y = glm::clamp(playerPosition.y, -WORLD_HALF_HEIGHT, WORLD_HALF_HEIGHT);
@@ -399,6 +597,19 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
     // make sure the viewport matches the new window dimensions; note that width and
     // height will be significantly larger than specified on retina displays.
     glViewport(0, 0, width, height);
+}
+
+// Key callback for precise single-press detection
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    // Handle bullet shooting with spacebar - only on key press (not repeat or release)
+    if (key == GLFW_KEY_SPACE && action == GLFW_PRESS) {
+        float currentTime = glfwGetTime();
+        if (currentTime - lastBulletTime >= BULLET_COOLDOWN) {
+            createBullet();
+            lastBulletTime = currentTime;
+        }
+    }
 }
 
 unsigned int loadTexture(const std::string& path)
