@@ -63,6 +63,15 @@ struct Bullet {
     Bullet() : position(0.0f), velocity(0.0f), isActive(false) {}
 };
 
+struct Explosion {
+    glm::vec2 position;
+    float timer;
+    float duration;
+    bool isActive;
+    
+    Explosion() : position(0.0f), timer(0.0f), duration(1.0f), isActive(false) {}
+};
+
 // ===== COLLISION DETECTION =====
 // Simple circular collision detection
 bool checkCollision(glm::vec2 pos1, float radius1, glm::vec2 pos2, float radius2) {
@@ -84,6 +93,9 @@ bool gameWon = false;
 const int MAX_BULLETS = 10;  // Maximum bullets on screen
 const float BULLET_SPEED = 6.0f;  // Speed of bullet movement
 std::vector<Bullet> bullets(MAX_BULLETS);
+
+const int MAX_EXPLOSIONS = 20;
+std::vector<Explosion> explosions(MAX_EXPLOSIONS);  // Explosion pool
 
 
 // The Width of the screen
@@ -185,6 +197,30 @@ glm::vec2 calculateCurvedAttackPosition(const Enemy& enemy) {
     }
 }
 
+void createExplosion(glm::vec2 position) {
+    for (int i = 0; i < MAX_EXPLOSIONS; i++) {
+        if (!explosions[i].isActive) {
+            explosions[i].position = position;
+            explosions[i].timer = 0.0f;
+            explosions[i].duration = 1.2f; // Longer to enjoy the enhanced boom
+            explosions[i].isActive = true;
+            std::cout << "Explosion created at (" << position.x << ", " << position.y << ")" << std::endl;
+            break;
+        }
+    }
+}
+
+void updateExplosions(float deltaTime) {
+    for (int i = 0; i < MAX_EXPLOSIONS; i++) {
+        if (explosions[i].isActive) {
+            explosions[i].timer += deltaTime;
+            if (explosions[i].timer >= explosions[i].duration) {
+                explosions[i].isActive = false;
+            }
+        }
+    }
+}
+
 void initializeEnemies() {
     int index = 0;
     for (int row=0; row<ENEMY_ROWS; row++) {
@@ -233,6 +269,8 @@ void updateBullets(float deltaTime) {
                 if (enemies[j].isAlive && 
                     checkCollision(bullets[i].position, BULLET_RADIUS, 
                                  enemies[j].position, ENEMY_RADIUS)) {
+
+                    createExplosion(enemies[j].position);
                     // Hit detected!
                     enemies[j].isAlive = false;  // Destroy enemy
                     bullets[i].isActive = false; // Destroy bullet
@@ -351,6 +389,9 @@ void updateEnemies(float deltaTime) {
         if (enemies[i].isAlive && !gameOver &&
             checkCollision(enemies[i].position, ENEMY_RADIUS, 
                          glm::vec2(playerPosition.x, playerPosition.y), PLAYER_RADIUS)) {
+
+            createExplosion(enemies[i].position);
+
             // Player hit by enemy!
             enemies[i].isAlive = false; // Destroy the enemy that hit player
             playerLives--;
@@ -424,6 +465,7 @@ int main(int argc, char *argv[])
     Shader playerShader((shaderDir + "playerModel.vs").c_str(), (shaderDir + "playerModel.fs").c_str());
     Shader enemyShader((shaderDir + "enemy.vs").c_str(), (shaderDir + "enemy.fs").c_str());
     Shader backgroundShader((shaderDir + "background.vs").c_str(), (shaderDir + "background.fs").c_str());
+    Shader explosionShader((shaderDir + "explosion.vs").c_str(), (shaderDir + "explosion.fs").c_str());
 
     // load player model
     Model* player = new Model(parentDir + "/resources/Package/MeteorSlicer.obj");
@@ -486,6 +528,21 @@ int main(int argc, char *argv[])
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glBindVertexArray(0);
 
+    // Setup explosion VAO (using same quad as enemies)
+    unsigned int explosionVAO, explosionVBO;
+    glGenVertexArrays(1, &explosionVAO);
+    glGenBuffers(1, &explosionVBO);
+
+    glBindVertexArray(explosionVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, explosionVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+    
+
     // Load enemy texture
     stbi_set_flip_vertically_on_load(true);
     unsigned int enemyTexture = loadTexture(parentDir + "/resources/spaceship-pack/ship_4.png");
@@ -503,6 +560,9 @@ int main(int argc, char *argv[])
 
     enemyShader.use();
     enemyShader.setInt("texture_diffuse0", 0);
+
+    // explosionShader.use();
+    // explosionShader.setInt("explosionTexture", 0); // Uncomment if using texture
 
     // backgroundShader.use();
     // backgroundShader.setInt("backgroundTexture", 0);
@@ -524,6 +584,7 @@ int main(int argc, char *argv[])
         if (!gameOver && !gameWon) {
             updateEnemies(deltaTime);
             updateBullets(deltaTime);
+            updateExplosions(deltaTime);
         }
 
         // render
@@ -607,6 +668,40 @@ int main(int argc, char *argv[])
             }
         }
 
+        // Draw explosions (render on top)
+        glDisable(GL_DEPTH_TEST); // Ensure explosions are always visible
+        glEnable(GL_BLEND); // Enable transparency for explosions
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE); // Additive blending for more boom!
+        for (int i = 0; i < MAX_EXPLOSIONS; i++) {
+            if (explosions[i].isActive) {
+                explosionShader.use();
+                explosionShader.setMat4("view", view);
+                explosionShader.setMat4("projection", projection);
+
+                // Send correct explosion-specific time and progress
+                explosionShader.setFloat("explosionTime", explosions[i].timer);
+                explosionShader.setFloat("explosionDuration", explosions[i].duration);
+                explosionShader.setVec2("explosionCenter", explosions[i].position);
+                
+                // Calculate explosion progress (0.0 to 1.0)
+                float progress = explosions[i].timer / explosions[i].duration;
+                explosionShader.setFloat("explosionProgress", progress);
+                explosionShader.setFloat("currentTime", currentFrame); // For additional effects
+
+                glm::mat4 explosionModel = glm::mat4(1.0f);
+                explosionModel = glm::translate(explosionModel, glm::vec3(explosions[i].position.x, explosions[i].position.y, 0.0f));
+                explosionModel = glm::scale(explosionModel, glm::vec3(0.5f, 0.5f, 1.0f)); // Control explosion size
+                explosionShader.setMat4("model", explosionModel);
+                
+                // Debug output (uncomment to debug)
+                // std::cout << "Rendering explosion " << i << " at progress: " << progress << " position: (" << explosions[i].position.x << ", " << explosions[i].position.y << ")" << std::endl;
+                
+                glBindVertexArray(explosionVAO);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+                glBindVertexArray(0);
+            }
+        }
+
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved
         // etc.)
         // -------------------------------------------------------------------------------
@@ -622,6 +717,8 @@ int main(int argc, char *argv[])
     glDeleteBuffers(1, &instanceVBO);
     glDeleteVertexArrays(1, &bulletVAO);
     glDeleteBuffers(1, &bulletVBO);
+    glDeleteVertexArrays(1, &explosionVAO);
+    glDeleteBuffers(1, &explosionVBO);
     glDeleteTextures(1, &enemyTexture);
     glDeleteTextures(1, &missileTexture);
 
@@ -655,6 +752,11 @@ void processInput(GLFWwindow *window) {
         // Reset bullets
         for (int i = 0; i < MAX_BULLETS; i++) {
             bullets[i].isActive = false;
+        }
+        
+        // Reset explosions
+        for (int i = 0; i < MAX_EXPLOSIONS; i++) {
+            explosions[i].isActive = false;
         }
         
         std::cout << "Game restarted!" << std::endl;
