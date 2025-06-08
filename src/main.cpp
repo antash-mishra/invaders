@@ -5,6 +5,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "glm/detail/type_mat.hpp"
 #include "glm/detail/type_vec.hpp"
@@ -12,9 +13,9 @@
 #include "shader.h"
 #include "camera.h"
 #include "stb_image.h"
+#include "audio_manager.h"
 
 #include <filesystem>
-#include <vector>
 namespace fs = std::filesystem;
 
 // GLFW function declarations
@@ -97,6 +98,7 @@ std::vector<Bullet> bullets(MAX_BULLETS);
 const int MAX_EXPLOSIONS = 20;
 std::vector<Explosion> explosions(MAX_EXPLOSIONS);  // Explosion pool
 
+AudioManager* audioManager = nullptr; // Audio manager for sound effects
 
 // The Width of the screen
 const unsigned int SCREEN_WIDTH = 800;
@@ -247,6 +249,11 @@ void initializeEnemies() {
 void createBullet() {
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (!bullets[i].isActive) {
+            // PLAY LASER SOUND
+            if (audioManager) {
+                audioManager->playSound("laser", 0.5f, 1.0f);
+            }
+            
             // Fire from the tip/front of the spaceship
             // Since spaceship is rotated 90 degrees, the "tip" is in the +Y direction
             bullets[i].position = glm::vec2(playerPosition.x, playerPosition.y + 0.15f); // From spaceship tip
@@ -271,6 +278,16 @@ void updateBullets(float deltaTime) {
                                  enemies[j].position, ENEMY_RADIUS)) {
 
                     createExplosion(enemies[j].position);
+
+                    // PLAY EXPLOSION SOUND
+                    if (audioManager) {
+                        audioManager->play3DSound("explosion", 
+                                                enemies[j].position.x, 
+                                                enemies[j].position.y, 
+                                                0.0f, 
+                                                0.5f); // Volume
+                    }
+
                     // Hit detected!
                     enemies[j].isAlive = false;  // Destroy enemy
                     bullets[i].isActive = false; // Destroy bullet
@@ -392,6 +409,11 @@ void updateEnemies(float deltaTime) {
 
             createExplosion(enemies[i].position);
 
+            // PLAY HIT SOUND
+            if (audioManager) {
+                audioManager->playSound("hit", 1.0f, 1.0f);
+            }
+
             // Player hit by enemy!
             enemies[i].isAlive = false; // Destroy the enemy that hit player
             playerLives--;
@@ -459,6 +481,22 @@ int main(int argc, char *argv[])
 
     std::string parentDir = (fs::current_path().fs::path::parent_path()).string();
     std::cout << "Parent directory: " << parentDir << std::endl;
+
+    // Initialize audio manager
+    audioManager = new AudioManager(16);
+    if (!audioManager->initialize()) {
+        std::cerr << "Failed to initialize audio manager!" << std::endl;
+        // Continue without audio (don't exit)
+        delete audioManager;
+        audioManager = nullptr;
+    } else {
+        // Load sound effects
+        std::string audioDir = parentDir + "/resources/audio/FreeSFX/GameSFX/";
+        audioManager->loadSound("hit", audioDir + "Explosion/Retro Explosion Short 01.wav");
+        audioManager->loadSound("laser", audioDir + "Weapon/laser/Retro Gun Laser SingleShot 01.wav");
+        audioManager->loadSound("explosion", audioDir + "Impact/Retro Impact LoFi 09.wav");
+        std::cout << "Audio system loaded successfully" << std::endl;
+    }
 
     // Load shaders
     std::string shaderDir = parentDir + "/resources/shaders/";
@@ -584,7 +622,7 @@ int main(int argc, char *argv[])
         if (!gameOver && !gameWon) {
             updateEnemies(deltaTime);
             updateBullets(deltaTime);
-            updateExplosions(deltaTime);
+            updateExplosions(deltaTime); 
         }
 
         // render
@@ -702,6 +740,11 @@ int main(int argc, char *argv[])
             }
         }
 
+        // Update audio listener position to follow player
+        if (audioManager) {
+            audioManager->setListenerPosition(playerPosition.x, playerPosition.y, 0.0f);
+        }
+
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved
         // etc.)
         // -------------------------------------------------------------------------------
@@ -721,6 +764,12 @@ int main(int argc, char *argv[])
     glDeleteBuffers(1, &explosionVBO);
     glDeleteTextures(1, &enemyTexture);
     glDeleteTextures(1, &missileTexture);
+
+    // Cleanup audio manager
+    if (audioManager) {
+        delete audioManager;
+        audioManager = nullptr;
+    }
 
     glfwTerminate();
     return 0;
@@ -765,13 +814,13 @@ void processInput(GLFWwindow *window) {
 
     // Only allow movement and shooting if game is active
     if (!gameOver && !gameWon) {
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
             playerPosition.y += moveSpeed;
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
             playerPosition.y -= moveSpeed;
-        if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
             playerPosition.x -= moveSpeed;
-        if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
             playerPosition.x += moveSpeed;
 
         // Handle bullet shooting with spacebar
