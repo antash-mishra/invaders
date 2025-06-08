@@ -641,7 +641,7 @@ int main(int argc, char *argv[])
         glDisable(GL_DEPTH_TEST);
         backgroundShader.use();
         backgroundShader.setFloat("time", currentFrame);
-        backgroundShader.setFloat("alpha", 0.3f);
+        backgroundShader.setFloat("alpha", 1.0f); // Full alpha for starfield visibility
 
         glActiveTexture(GL_TEXTURE0);
         // glBindTexture(GL_TEXTURE_2D, backgroundTexture);
