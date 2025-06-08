@@ -20,7 +20,6 @@ namespace fs = std::filesystem;
 // GLFW function declarations
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void processInput(GLFWwindow *window);
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 unsigned int loadTexture(const std::string& path);
 
 // ===== ENEMY TRACKING SYSTEM =====
@@ -64,6 +63,24 @@ struct Bullet {
     Bullet() : position(0.0f), velocity(0.0f), isActive(false) {}
 };
 
+// ===== COLLISION DETECTION =====
+// Simple circular collision detection
+bool checkCollision(glm::vec2 pos1, float radius1, glm::vec2 pos2, float radius2) {
+    float distance = glm::length(pos1 - pos2);
+    return distance < (radius1 + radius2);
+}
+
+// Game object sizes for collision detection
+const float PLAYER_RADIUS = 0.15f;      // Player collision radius
+const float ENEMY_RADIUS = 0.12f;       // Enemy collision radius  
+const float BULLET_RADIUS = 0.05f;      // Bullet collision radius
+
+// ===== GAME STATE =====
+int playerScore = 0;
+int playerLives = 3;
+bool gameOver = false;
+bool gameWon = false;
+
 const int MAX_BULLETS = 10;  // Maximum bullets on screen
 const float BULLET_SPEED = 6.0f;  // Speed of bullet movement
 std::vector<Bullet> bullets(MAX_BULLETS);
@@ -106,7 +123,7 @@ const float ATTACK_INTERVAL = 2.0f;  // Time between attacks (2 seconds)
 
 // Bullet timing control
 float lastBulletTime = 0.0f;
-const float BULLET_COOLDOWN = 0.25f;  // 0.25 seconds between bullets
+const float BULLET_COOLDOWN = 0.50f;  // 0.50 seconds between bullets
 
 // Mouse initial position
 float lastX = SCREEN_WIDTH/2.0;
@@ -199,7 +216,7 @@ void createBullet() {
             bullets[i].position = glm::vec2(playerPosition.x, playerPosition.y + 0.15f); // From spaceship tip
             bullets[i].velocity = glm::vec2(0.0f, BULLET_SPEED); // Move upward
             bullets[i].isActive = true;
-            return; // Exit immediately after creating one bullet
+            break; // Only fire one bullet per call
         }
     }
 }
@@ -210,6 +227,27 @@ void updateBullets(float deltaTime) {
         if (bullets[i].isActive) {
             // Move bullet upward
             bullets[i].position += bullets[i].velocity * deltaTime;
+            
+            // Check collision with enemies
+            for (int j = 0; j < TOTAL_ENEMIES; j++) {
+                if (enemies[j].isAlive && 
+                    checkCollision(bullets[i].position, BULLET_RADIUS, 
+                                 enemies[j].position, ENEMY_RADIUS)) {
+                    // Hit detected!
+                    enemies[j].isAlive = false;  // Destroy enemy
+                    bullets[i].isActive = false; // Destroy bullet
+                    
+                    // Add score based on enemy type
+                    switch(enemies[j].type) {
+                        case GRUNT: playerScore += 10; break;
+                        case SERGEANT: playerScore += 20; break;
+                        case CAPTAIN: playerScore += 50; break;
+                    }
+                    
+                    std::cout << "Enemy destroyed! Score: " << playerScore << std::endl;
+                    break; // Bullet can only hit one enemy
+                }
+            }
             
             // Deactivate bullet if it goes off screen
             if (bullets[i].position.y > WORLD_HALF_HEIGHT + 1.0f) {
@@ -309,10 +347,34 @@ void updateEnemies(float deltaTime) {
             }
         }
 
+        // Check collision with player
+        if (enemies[i].isAlive && !gameOver &&
+            checkCollision(enemies[i].position, ENEMY_RADIUS, 
+                         glm::vec2(playerPosition.x, playerPosition.y), PLAYER_RADIUS)) {
+            // Player hit by enemy!
+            enemies[i].isAlive = false; // Destroy the enemy that hit player
+            playerLives--;
+            
+            std::cout << "Player hit! Lives remaining: " << playerLives << std::endl;
+            
+            if (playerLives <= 0) {
+                gameOver = true;
+                std::cout << "Game Over! Final Score: " << playerScore << std::endl;
+                std::cout << "Press 'R' to restart the game." << std::endl;
+            }
+        }
+
         // Add to alive positions for rendering
         if (enemies[i].isAlive) {
             aliveEnemyPositions.push_back(enemies[i].position);
         }
+    }
+    
+    // Check win condition
+    if (!gameWon && !gameOver && aliveEnemyPositions.empty()) {
+        gameWon = true;
+        std::cout << "Congratulations! You won! Final Score: " << playerScore << std::endl;
+        std::cout << "Press 'R' to restart the game." << std::endl;
     }
 }
 
@@ -337,7 +399,6 @@ int main(int argc, char *argv[])
 
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-    glfwSetKeyCallback(window, key_callback);  // Register key callback for precise single-shot detection
     // glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
         // glad: load all OpenGL function pointers
@@ -459,8 +520,11 @@ int main(int argc, char *argv[])
         // -------------
         processInput(window);
 
-        updateEnemies(deltaTime);
-        updateBullets(deltaTime);
+        // Only update game objects if game is active
+        if (!gameOver && !gameWon) {
+            updateEnemies(deltaTime);
+            updateBullets(deltaTime);
+        }
 
         // render
         // ------
@@ -532,7 +596,7 @@ int main(int argc, char *argv[])
                 // Create transformation matrix for this bullet
                 glm::mat4 bulletModel = glm::mat4(1.0f);
                 bulletModel = glm::translate(bulletModel, glm::vec3(bullets[i].position.x, bullets[i].position.y, 0.0f));
-                bulletModel = glm::scale(bulletModel, glm::vec3(0.8f, 0.5f, 1.0f)); // Smaller and taller for bullet shape
+                bulletModel = glm::scale(bulletModel, glm::vec3(0.5f, 0.6f, 1.0f)); // Smaller and taller for bullet shape
                 enemyShader.setMat4("model", bulletModel);
 
                 glActiveTexture(GL_TEXTURE0);
@@ -576,20 +640,50 @@ void processInput(GLFWwindow *window) {
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        playerPosition.y += moveSpeed;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        playerPosition.y -= moveSpeed;
-    if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        playerPosition.x -= moveSpeed;
-    if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        playerPosition.x += moveSpeed;
+    // Handle game restart
+    if ((gameOver || gameWon) && glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
+        // Reset game state
+        gameOver = false;
+        gameWon = false;
+        playerScore = 0;
+        playerLives = 3;
+        playerPosition = glm::vec3(0.0f, -2.0f, 0.0f);
+        
+        // Reset enemies
+        initializeEnemies();
+        
+        // Reset bullets
+        for (int i = 0; i < MAX_BULLETS; i++) {
+            bullets[i].isActive = false;
+        }
+        
+        std::cout << "Game restarted!" << std::endl;
+        return;
+    }
 
-    // Note: Bullet shooting is now handled in key_callback() for precise single-shot detection
+    // Only allow movement and shooting if game is active
+    if (!gameOver && !gameWon) {
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            playerPosition.y += moveSpeed;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            playerPosition.y -= moveSpeed;
+        if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            playerPosition.x -= moveSpeed;
+        if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            playerPosition.x += moveSpeed;
 
-    // Clamp player position to screen bounds
-    playerPosition.x = glm::clamp(playerPosition.x, -WORLD_HALF_WIDTH, WORLD_HALF_WIDTH);
-    playerPosition.y = glm::clamp(playerPosition.y, -WORLD_HALF_HEIGHT, WORLD_HALF_HEIGHT);
+        // Handle bullet shooting with spacebar
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+            if (currentTime - lastBulletTime >= BULLET_COOLDOWN) {
+                createBullet();
+                lastBulletTime = currentTime;
+            }
+        }
+
+        // Clamp player position to screen bounds
+        playerPosition.x = glm::clamp(playerPosition.x, -WORLD_HALF_WIDTH, WORLD_HALF_WIDTH);
+        playerPosition.y = glm::clamp(playerPosition.y, -WORLD_HALF_HEIGHT, WORLD_HALF_HEIGHT);
+    }
 }
 
 void framebuffer_size_callback(GLFWwindow *window, int width, int height)
@@ -597,19 +691,6 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
     // make sure the viewport matches the new window dimensions; note that width and
     // height will be significantly larger than specified on retina displays.
     glViewport(0, 0, width, height);
-}
-
-// Key callback for precise single-press detection
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
-{
-    // Handle bullet shooting with spacebar - only on key press (not repeat or release)
-    if (key == GLFW_KEY_SPACE && action == GLFW_PRESS) {
-        float currentTime = glfwGetTime();
-        if (currentTime - lastBulletTime >= BULLET_COOLDOWN) {
-            createBullet();
-            lastBulletTime = currentTime;
-        }
-    }
 }
 
 unsigned int loadTexture(const std::string& path)
