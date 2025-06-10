@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <float.h>
 
 #include "glm/detail/type_mat.hpp"
 #include "glm/detail/type_vec.hpp"
@@ -14,6 +15,7 @@
 #include "camera.h"
 #include "stb_image.h"
 #include "audio_manager.h"
+#include "stb_easy_font.h"
 
 #include <filesystem>
 namespace fs = std::filesystem;
@@ -21,6 +23,7 @@ namespace fs = std::filesystem;
 // GLFW function declarations
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void processInput(GLFWwindow *window);
+void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 unsigned int loadTexture(const std::string& path);
 
 // ===== ENEMY TRACKING SYSTEM =====
@@ -54,7 +57,7 @@ struct Enemy {
               attackTimer(0.0f), attackStartPos(0.0f), attackTargetPos(0.0f),
               attackPattern(0), attackSpeed(0.7f) {}
 };
-
+ 
 // ===== BULLET SYSTEM =====
 struct Bullet {
     glm::vec2 position;
@@ -73,6 +76,18 @@ struct Explosion {
     Explosion() : position(0.0f), timer(0.0f), duration(1.0f), isActive(false) {}
 };
 
+// ===== PARALLAX BACKGROUND SYSTEM =====
+struct ParallaxLayer {
+    unsigned int texture;
+    float scrollSpeed;
+    float offsetX;
+    std::string name;
+    
+    ParallaxLayer() : texture(0), scrollSpeed(0.0f), offsetX(0.0f) {}
+    ParallaxLayer(unsigned int tex, float speed, const std::string& layerName) 
+        : texture(tex), scrollSpeed(speed), offsetX(0.0f), name(layerName) {}
+};
+
 // ===== COLLISION DETECTION =====
 // Simple circular collision detection
 bool checkCollision(glm::vec2 pos1, float radius1, glm::vec2 pos2, float radius2) {
@@ -85,11 +100,37 @@ const float PLAYER_RADIUS = 0.15f;      // Player collision radius
 const float ENEMY_RADIUS = 0.12f;       // Enemy collision radius  
 const float BULLET_RADIUS = 0.05f;      // Bullet collision radius
 
+// ===== GAME STATE SYSTEM =====
+enum class GameState { 
+    MENU, 
+    PLAYING, 
+    GAME_OVER, 
+    GAME_WON 
+};
+GameState gameState = GameState::MENU;
+
+// ===== TEXT RENDERING SYSTEM =====
+struct TextButton {
+    std::string text;
+    float pixelX, pixelY, scale;
+    glm::vec3 color;
+    glm::vec4 bounds;  // NDC bounds for clicking (x0,y0,x1,y1)
+    bool isHovered = false;
+    
+    TextButton(const std::string& txt, float x, float y, float s, glm::vec3 col) 
+        : text(txt), pixelX(x), pixelY(y), scale(s), color(col), bounds(0.0f) {}
+};
+
+std::vector<TextButton> menuButtons;
+
+// Text rendering globals
+unsigned int textVAO = 0, textVBO = 0;
+const int MAX_TEXT_TRIANGLES = 1024;
+Shader* textShaderPtr = nullptr;
+
 // ===== GAME STATE =====
 int playerScore = 0;
 int playerLives = 3;
-bool gameOver = false;
-bool gameWon = false;
 
 const int MAX_BULLETS = 10;  // Maximum bullets on screen
 const float BULLET_SPEED = 6.0f;  // Speed of bullet movement
@@ -100,10 +141,13 @@ std::vector<Explosion> explosions(MAX_EXPLOSIONS);  // Explosion pool
 
 AudioManager* audioManager = nullptr; // Audio manager for sound effects
 
-// The Width of the screen
+// Initial window dimensions
 const unsigned int SCREEN_WIDTH = 800;
-// The height of the screen
 const unsigned int SCREEN_HEIGHT = 600;
+
+// Current window dimensions (updated on resize)
+int currentWindowWidth = SCREEN_WIDTH;
+int currentWindowHeight = SCREEN_HEIGHT;
 
 Camera camera(glm::vec3(0.0f, 0.0f, 5.0f));
 
@@ -157,15 +201,18 @@ float quadVertices[] = { // vertex attributes for a quad in world space coordina
 
 // Full-screen background quad in Normalized Device Coordinates (-1 to +1)
 float backgroundVerticesNDC[] = {
-    // positions (NDC)  // texCoords (for tiling)
-    -1.0f,  1.0f,       0.0f, 2.0f,  // top left
+    // positions (NDC)  // texCoords (for parallax wrapping)
+    -1.0f,  1.0f,       0.0f, 1.0f,  // top left
     -1.0f, -1.0f,       0.0f, 0.0f,  // bottom left
-     1.0f, -1.0f,       2.0f, 0.0f,  // bottom right
-    -1.0f,  1.0f,       0.0f, 2.0f,  // top left
-     1.0f, -1.0f,       2.0f, 0.0f,  // bottom right
-     1.0f,  1.0f,       2.0f, 2.0f   // top right
+     1.0f, -1.0f,       1.0f, 0.0f,  // bottom right
+    -1.0f,  1.0f,       0.0f, 1.0f,  // top left
+     1.0f, -1.0f,       1.0f, 0.0f,  // bottom right
+     1.0f,  1.0f,       1.0f, 1.0f   // top right
 };
 
+
+const int NUM_PARALLAX_LAYERS = 6;
+std::vector<ParallaxLayer> parallaxLayers;
 
 // Calculate curved attack position using Bezier curves
 glm::vec2 calculateCurvedAttackPosition(const Enemy& enemy) {
@@ -312,6 +359,166 @@ void updateBullets(float deltaTime) {
     }
 }
 
+// ===== TEXT RENDERING FUNCTIONS =====
+glm::vec4 calculateTextBounds(const char* text, float x, float y, float scale) {
+    char buffer[9999];
+    int numQuads = stb_easy_font_print(0, 0, (char*)text, nullptr, buffer, sizeof(buffer));
+    
+    if (numQuads == 0) return glm::vec4(0.0f);
+    
+    float minX = FLT_MAX, minY = FLT_MAX;
+    float maxX = -FLT_MAX, maxY = -FLT_MAX;
+    
+    // Find bounding box of all character quads
+    for (int q = 0; q < numQuads; ++q) {
+        // Each quad has 4 vertices, each vertex is 16 bytes
+        char* quadData = buffer + q * 4 * 16;
+        
+        for (int i = 0; i < 4; ++i) {
+            float* vertex = (float*)(quadData + i * 16);
+            float px = x + vertex[0] * scale;  // vertex[0] is x
+            float py = y + vertex[1] * scale;  // vertex[1] is y
+            
+            minX = std::min(minX, px);
+            maxX = std::max(maxX, px);
+            minY = std::min(minY, py);
+            maxY = std::max(maxY, py);
+        }
+    }
+    
+    // Convert to NDC using current window dimensions
+    float ndcX0 =  minX / (currentWindowWidth  * 0.5f) - 1.0f;
+    float ndcX1 =  maxX / (currentWindowWidth  * 0.5f) - 1.0f;
+    float ndcY0 = -maxY / (currentWindowHeight * 0.5f) + 1.0f;  // flip Y
+    float ndcY1 = -minY / (currentWindowHeight * 0.5f) + 1.0f;
+    
+    return glm::vec4(ndcX0, ndcY0, ndcX1, ndcY1);  // x0,y0,x1,y1
+}
+
+void renderText(const char* txt, float x, float y, float scale, const glm::vec3& rgb) {
+    char buffer[9999];
+    int numQuads = stb_easy_font_print(0, 0, (char*)txt, nullptr, buffer, sizeof(buffer));
+    
+    if (numQuads == 0) return;
+
+    // Convert quads to triangles with proper vertex format parsing
+    // stb_easy_font vertex format: x(float), y(float), z(float), color(uint8[4]) = 16 bytes per vertex
+    std::vector<float> verts;
+    verts.reserve(numQuads * 6 * 2);   // 6 verts per quad, 2 floats each (x,y)
+
+    for (int q = 0; q < numQuads; ++q) {
+        // Each quad has 4 vertices, each vertex is 16 bytes
+        char* quadData = buffer + q * 4 * 16;
+        float vx[4], vy[4];
+        
+        // Extract x,y from each vertex (skip z and color)
+        for (int i = 0; i < 4; ++i) {
+            float* vertex = (float*)(quadData + i * 16);
+            
+            // Apply scaling and positioning 
+            vx[i] = x + vertex[0] * scale;  // vertex[0] is x
+            vy[i] = y + vertex[1] * scale;  // vertex[1] is y
+            
+            // Convert pixels to NDC using current window dimensions
+            vx[i] =  vx[i] / (currentWindowWidth  * 0.5f) - 1.0f;
+            vy[i] = -vy[i] / (currentWindowHeight * 0.5f) + 1.0f;  // flip Y
+        }
+        
+        // Convert quad to two triangles: (0,1,2) and (0,2,3)
+        int indices[6] = {0,1,2,0,2,3};
+        for (int i = 0; i < 6; ++i) {
+            verts.push_back(vx[indices[i]]);
+            verts.push_back(vy[indices[i]]);
+        }
+    }
+
+    if (verts.empty()) return;
+
+    // Check if textShaderPtr is valid
+    if (!textShaderPtr) {
+        std::cout << "ERROR: textShaderPtr is null!" << std::endl;
+        return;
+    }
+
+    // Upload vertex data
+    glBindBuffer(GL_ARRAY_BUFFER, textVBO);
+    if (verts.size() * sizeof(float) <= MAX_TEXT_TRIANGLES * 3 * 2 * sizeof(float)) {
+        glBufferSubData(GL_ARRAY_BUFFER, 0, verts.size() * sizeof(float), verts.data());
+    } else {
+        std::cout << "Text buffer overflow!" << std::endl;
+        return;
+    }
+
+    // Render
+    textShaderPtr->use();
+    glm::mat4 I(1.0f);
+    textShaderPtr->setMat4("projection", I);      // already in clip space
+    textShaderPtr->setVec3("color", rgb);
+
+    // Ensure proper OpenGL state for text rendering
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_CULL_FACE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    glBindVertexArray(textVAO);
+    glDrawArrays(GL_TRIANGLES, 0, verts.size() / 2);
+    glBindVertexArray(0);
+}
+
+// Helper function to get text width for centering
+float getTextWidth(const char* text, float scale) {
+    char buffer[9999];
+    int numQuads = stb_easy_font_print(0, 0, (char*)text, nullptr, buffer, sizeof(buffer));
+    
+    if (numQuads == 0) return 0.0f;
+    
+    float minX = FLT_MAX, maxX = -FLT_MAX;
+    for (int q = 0; q < numQuads; ++q) {
+        // Each quad has 4 vertices, each vertex is 16 bytes
+        char* quadData = buffer + q * 4 * 16;
+        for (int i = 0; i < 4; ++i) {
+            float* vertex = (float*)(quadData + i * 16);
+            float px = vertex[0] * scale;  // vertex[0] is x coordinate
+            minX = std::min(minX, px);
+            maxX = std::max(maxX, px);
+        }
+    }
+    return maxX - minX;
+}
+
+void initMenuButtons() {
+    menuButtons.clear();
+    
+    // Add GALAXIAN title (centered)
+    const char* titleText = "GALAXIAN";
+    float titleScale = 4.0f;
+    float titleWidth = getTextWidth(titleText, titleScale);
+    float titleX = (currentWindowWidth - titleWidth) / 2.0f;
+    TextButton titleButton(titleText, titleX, currentWindowHeight * 0.25f, titleScale, glm::vec3(1.0f, 1.0f, 1.0f));
+    titleButton.bounds = calculateTextBounds(titleButton.text.c_str(), titleButton.pixelX, titleButton.pixelY, titleButton.scale);
+    menuButtons.push_back(titleButton);
+    
+    // Add start button (centered)
+    const char* startText = "CLICK TO START";
+    float startScale = 2.5f;
+    float startWidth = getTextWidth(startText, startScale);
+    float startX = (currentWindowWidth - startWidth) / 2.0f;
+    TextButton startButton(startText, startX, currentWindowHeight/2.0f, startScale, glm::vec3(1.0f, 1.0f, 0.0f));
+    startButton.bounds = calculateTextBounds(startButton.text.c_str(), startButton.pixelX, startButton.pixelY, startButton.scale);
+    menuButtons.push_back(startButton);
+    
+    // Add quit button (centered)
+    const char* quitText = "PRESS ESC TO QUIT";
+    float quitScale = 1.5f;
+    float quitWidth = getTextWidth(quitText, quitScale);
+    float quitX = (currentWindowWidth - quitWidth) / 2.0f;
+    TextButton quitButton(quitText, quitX, currentWindowHeight/2.0f + 60.0f, quitScale, glm::vec3(0.8f, 0.8f, 1.0f));
+    quitButton.bounds = calculateTextBounds(quitButton.text.c_str(), quitButton.pixelX, quitButton.pixelY, quitButton.scale);
+    menuButtons.push_back(quitButton);
+}
+
 void updateEnemies(float deltaTime) {
     // Update alive enemies list for rendering
     aliveEnemyPositions.clear();
@@ -403,7 +610,7 @@ void updateEnemies(float deltaTime) {
         }
 
         // Check collision with player
-        if (enemies[i].isAlive && !gameOver &&
+        if (enemies[i].isAlive && gameState == GameState::PLAYING &&
             checkCollision(enemies[i].position, ENEMY_RADIUS, 
                          glm::vec2(playerPosition.x, playerPosition.y), PLAYER_RADIUS)) {
 
@@ -419,12 +626,6 @@ void updateEnemies(float deltaTime) {
             playerLives--;
             
             std::cout << "Player hit! Lives remaining: " << playerLives << std::endl;
-            
-            if (playerLives <= 0) {
-                gameOver = true;
-                std::cout << "Game Over! Final Score: " << playerScore << std::endl;
-                std::cout << "Press 'R' to restart the game." << std::endl;
-            }
         }
 
         // Add to alive positions for rendering
@@ -433,12 +634,7 @@ void updateEnemies(float deltaTime) {
         }
     }
     
-    // Check win condition
-    if (!gameWon && !gameOver && aliveEnemyPositions.empty()) {
-        gameWon = true;
-        std::cout << "Congratulations! You won! Final Score: " << playerScore << std::endl;
-        std::cout << "Press 'R' to restart the game." << std::endl;
-    }
+    // Win condition will be checked in main loop
 }
 
 int main(int argc, char *argv[])
@@ -462,6 +658,7 @@ int main(int argc, char *argv[])
 
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetMouseButtonCallback(window, mouseButtonCallback);
     // glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
         // glad: load all OpenGL function pointers
@@ -503,13 +700,30 @@ int main(int argc, char *argv[])
     Shader playerShader((shaderDir + "playerModel.vs").c_str(), (shaderDir + "playerModel.fs").c_str());
     Shader enemyShader((shaderDir + "enemy.vs").c_str(), (shaderDir + "enemy.fs").c_str());
     Shader backgroundShader((shaderDir + "background.vs").c_str(), (shaderDir + "background.fs").c_str());
+    Shader parallaxShader((shaderDir + "parallax.vs").c_str(), (shaderDir + "parallax.fs").c_str());
     Shader explosionShader((shaderDir + "explosion.vs").c_str(), (shaderDir + "explosion.fs").c_str());
+    Shader textShader((shaderDir + "text.vs").c_str(), (shaderDir + "text.fs").c_str());
+    textShaderPtr = &textShader;
 
     // load player model
     Model* player = new Model(parentDir + "/resources/Package/MeteorSlicer.obj");
 
     // Generate enemy formation positions (Galaxian style)
     initializeEnemies();
+    
+    // Initialize menu system
+    initMenuButtons();
+    
+    // Setup text rendering VAO
+    glGenVertexArrays(1, &textVAO);
+    glGenBuffers(1, &textVBO);
+    
+    glBindVertexArray(textVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, textVBO);
+    glBufferData(GL_ARRAY_BUFFER, MAX_TEXT_TRIANGLES * 3 * 2 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
 
     // Setup background VAO
     unsigned int backgroundVAO, backgroundVBO;
@@ -581,15 +795,26 @@ int main(int argc, char *argv[])
     glBindVertexArray(0);
     
 
+    // Load parallax background layers (from back to front)
+    stbi_set_flip_vertically_on_load(true); // Keep images right-side up for backgrounds
+    std::string layerDir = parentDir + "/resources/background/Super Mountain Dusk Files/Assets/version A/Layers/";
+    
+    parallaxLayers.clear();
+    parallaxLayers.push_back(ParallaxLayer(loadTexture(layerDir + "sky.png"), 0.0f, "sky"));              // Static sky
+    parallaxLayers.push_back(ParallaxLayer(loadTexture(layerDir + "far-clouds.png"), 0.1f, "far-clouds"));   // Very slow
+    parallaxLayers.push_back(ParallaxLayer(loadTexture(layerDir + "far-mountains.png"), 0.2f, "far-mountains")); // Slow
+    parallaxLayers.push_back(ParallaxLayer(loadTexture(layerDir + "near-clouds.png"), 0.3f, "near-clouds"));  // Medium slow
+    parallaxLayers.push_back(ParallaxLayer(loadTexture(layerDir + "mountains.png"), 0.5f, "mountains"));    // Medium
+    parallaxLayers.push_back(ParallaxLayer(loadTexture(layerDir + "trees.png"), 0.8f, "trees"));          // Fast
+    
+    std::cout << "Loaded " << parallaxLayers.size() << " parallax layers" << std::endl;
+
     // Load enemy texture
     stbi_set_flip_vertically_on_load(true);
     unsigned int enemyTexture = loadTexture(parentDir + "/resources/spaceship-pack/ship_4.png");
     
     // Load missile texture
     unsigned int missileTexture = loadTexture(parentDir + "/resources/spaceship-pack/missiles.png");
-
-    //Load background texture
-    // unsigned int backgroundTexture = loadTexture(parentDir + "/resources/    spaceship-pack/planet_1.png");
 
     // shader configuration
     // --------------------
@@ -599,11 +824,8 @@ int main(int argc, char *argv[])
     enemyShader.use();
     enemyShader.setInt("texture_diffuse0", 0);
 
-    // explosionShader.use();
-    // explosionShader.setInt("explosionTexture", 0); // Uncomment if using texture
-
-    // backgroundShader.use();
-    // backgroundShader.setInt("backgroundTexture", 0);
+    parallaxShader.use();
+    parallaxShader.setInt("backgroundTexture", 0);
 
     while (!glfwWindowShouldClose(window))
     {
@@ -618,11 +840,31 @@ int main(int argc, char *argv[])
         // -------------
         processInput(window);
 
+        // Update parallax layers only when they're being rendered (menu and game over states)
+        if (gameState == GameState::MENU || gameState == GameState::GAME_OVER || gameState == GameState::GAME_WON) {
+            for (auto& layer : parallaxLayers) {
+                layer.offsetX += layer.scrollSpeed * deltaTime * 0.1f; // Slow down the effect
+                // Wrap around when offset gets too large
+                if (layer.offsetX > 1.0f) {
+                    layer.offsetX -= 1.0f;
+                }
+            }
+        }
+
         // Only update game objects if game is active
-        if (!gameOver && !gameWon) {
+        if (gameState == GameState::PLAYING) {
             updateEnemies(deltaTime);
             updateBullets(deltaTime);
-            updateExplosions(deltaTime); 
+            updateExplosions(deltaTime);
+            
+            // Check win/lose conditions
+            if (playerLives <= 0) {
+                gameState = GameState::GAME_OVER;
+                std::cout << "Game Over! Final Score: " << playerScore << std::endl;
+            } else if (aliveEnemyPositions.empty()) {
+                gameState = GameState::GAME_WON;
+                std::cout << "You Won! Final Score: " << playerScore << std::endl;
+            }
         }
 
         // render
@@ -637,7 +879,76 @@ int main(int argc, char *argv[])
         
 
 
-        // Render background
+        // ===== MENU STATE =====
+        if (gameState == GameState::MENU) {
+            // Render parallax background layers for menu
+            glDisable(GL_DEPTH_TEST);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            
+            parallaxShader.use();
+            
+            for (const auto& layer : parallaxLayers) {
+                parallaxShader.setFloat("offsetX", layer.offsetX);
+                parallaxShader.setFloat("alpha", 1.0f);
+                
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, layer.texture);
+                glBindVertexArray(backgroundVAO);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+            }
+            
+            glBindVertexArray(0);
+            
+            // Render menu buttons with proper centering
+            for (const auto& button : menuButtons) {
+                renderText(button.text.c_str(), button.pixelX, button.pixelY, button.scale, button.color);
+            }
+            
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+            continue;
+        }
+
+        // ===== GAME OVER / WIN STATES =====
+        if (gameState == GameState::GAME_OVER || gameState == GameState::GAME_WON) {
+            // Render parallax background layers for game over/win screens
+            glDisable(GL_DEPTH_TEST);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            
+            parallaxShader.use();
+            
+            for (const auto& layer : parallaxLayers) {
+                parallaxShader.setFloat("offsetX", layer.offsetX);
+                parallaxShader.setFloat("alpha", 1.0f);
+                
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, layer.texture);
+                glBindVertexArray(backgroundVAO);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+            }
+            
+            glBindVertexArray(0);
+            
+            // Render text on top of background
+            std::string message = (gameState == GameState::GAME_OVER) ? "GAME OVER" : "YOU WON!";
+            std::string scoreText = "SCORE: " + std::to_string(playerScore);
+            std::string restartText = "PRESS R TO RESTART";
+            
+            renderText(message.c_str(), currentWindowWidth/2.0f - 80.0f, currentWindowHeight/2.0f - 50.0f, 3.0f, 
+                      glm::vec3(1.0f, 0.0f, 0.0f));
+            renderText(scoreText.c_str(), currentWindowWidth/2.0f - 60.0f, currentWindowHeight/2.0f, 2.0f, 
+                      glm::vec3(1.0f, 1.0f, 0.0f));
+            renderText(restartText.c_str(), currentWindowWidth/2.0f - 100.0f, currentWindowHeight/2.0f + 50.0f, 1.5f, 
+                      glm::vec3(0.8f, 0.8f, 1.0f));
+            
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+            continue;
+        }
+
+        // ===== PLAYING STATE - GAME RENDERING =====
         glDisable(GL_DEPTH_TEST);
         backgroundShader.use();
         backgroundShader.setFloat("time", currentFrame);
@@ -648,7 +959,7 @@ int main(int argc, char *argv[])
         glBindVertexArray(backgroundVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
-
+        
         playerShader.use();
         playerShader.setMat4("view", view);
         playerShader.setMat4("projection", projection);
@@ -764,6 +1075,15 @@ int main(int argc, char *argv[])
     glDeleteBuffers(1, &explosionVBO);
     glDeleteTextures(1, &enemyTexture);
     glDeleteTextures(1, &missileTexture);
+    
+    // Cleanup parallax textures
+    for (const auto& layer : parallaxLayers) {
+        glDeleteTextures(1, &layer.texture);
+    }
+    
+    // Cleanup text rendering
+    glDeleteVertexArrays(1, &textVAO);
+    glDeleteBuffers(1, &textVBO);
 
     // Cleanup audio manager
     if (audioManager) {
@@ -779,6 +1099,35 @@ int main(int argc, char *argv[])
 // process all input: query GLFW whether relevant keys are pressed/released this
 // frame and react accordingly
 // ---------------------------------------------------------------------------------------------------------
+void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
+    if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+    
+    if (gameState == GameState::MENU) {
+        double mouseX, mouseY;
+        glfwGetCursorPos(window, &mouseX, &mouseY);
+        
+        // Convert mouse position to NDC using current window dimensions
+        float ndcX =  (float)mouseX / (currentWindowWidth  * 0.5f) - 1.0f;
+        float ndcY = -(float)mouseY / (currentWindowHeight * 0.5f) + 1.0f;
+        
+        // Check if click is on start button
+        for (auto& button : menuButtons) {
+            if (button.text == "CLICK TO START" &&
+                ndcX >= button.bounds.x && ndcX <= button.bounds.z &&
+                ndcY >= button.bounds.y && ndcY <= button.bounds.w) {
+                
+                gameState = GameState::PLAYING;
+                
+                // Play click sound
+                if (audioManager) {
+                    audioManager->playSound("laser", 0.3f);
+                }
+                break;
+            }
+        }
+    }
+}
+
 void processInput(GLFWwindow *window) {
     float currentTime = glfwGetTime();
     const float moveSpeed = playerSpeed * deltaTime;
@@ -787,10 +1136,10 @@ void processInput(GLFWwindow *window) {
         glfwSetWindowShouldClose(window, true);
 
     // Handle game restart
-    if ((gameOver || gameWon) && glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
+    if ((gameState == GameState::GAME_OVER || gameState == GameState::GAME_WON) && 
+        glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
         // Reset game state
-        gameOver = false;
-        gameWon = false;
+        gameState = GameState::PLAYING;
         playerScore = 0;
         playerLives = 3;
         playerPosition = glm::vec3(0.0f, -2.0f, 0.0f);
@@ -813,7 +1162,7 @@ void processInput(GLFWwindow *window) {
     }
 
     // Only allow movement and shooting if game is active
-    if (!gameOver && !gameWon) {
+    if (gameState == GameState::PLAYING) {
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
             playerPosition.y += moveSpeed;
         if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
@@ -842,6 +1191,15 @@ void framebuffer_size_callback(GLFWwindow *window, int width, int height)
     // make sure the viewport matches the new window dimensions; note that width and
     // height will be significantly larger than specified on retina displays.
     glViewport(0, 0, width, height);
+    
+    // Update current window dimensions
+    currentWindowWidth = width;
+    currentWindowHeight = height;
+    
+    // Recalculate text button bounds for the new window size
+    if (gameState == GameState::MENU) {
+        initMenuButtons();
+    }
 }
 
 unsigned int loadTexture(const std::string& path)
@@ -867,7 +1225,7 @@ unsigned int loadTexture(const std::string& path)
 
         // Set texture wrapping to repeat for tiling effect
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE); // Prevent vertical tiling
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
