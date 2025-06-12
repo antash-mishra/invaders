@@ -149,8 +149,6 @@ const unsigned int SCREEN_HEIGHT = 600;
 int currentWindowWidth = SCREEN_WIDTH;
 int currentWindowHeight = SCREEN_HEIGHT;
 
-Camera camera(glm::vec3(0.0f, 0.0f, 5.0f));
-
 // Time
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
@@ -375,7 +373,7 @@ glm::vec4 calculateTextBounds(const char* text, float x, float y, float scale) {
         char* quadData = buffer + q * 4 * 16;
         
         for (int i = 0; i < 4; ++i) {
-            float* vertex = (float*)(quadData + i * 16);
+            auto* vertex = reinterpret_cast<float*>(quadData + i * 16);
             float px = x + vertex[0] * scale;  // vertex[0] is x
             float py = y + vertex[1] * scale;  // vertex[1] is y
             
@@ -392,7 +390,7 @@ glm::vec4 calculateTextBounds(const char* text, float x, float y, float scale) {
     float ndcY0 = -maxY / (currentWindowHeight * 0.5f) + 1.0f;  // flip Y
     float ndcY1 = -minY / (currentWindowHeight * 0.5f) + 1.0f;
     
-    return glm::vec4(ndcX0, ndcY0, ndcX1, ndcY1);  // x0,y0,x1,y1
+    return {ndcX0, ndcY0, ndcX1, ndcY1};  // x0,y0,x1,y1
 }
 
 void renderText(const char* txt, float x, float y, float scale, const glm::vec3& rgb) {
@@ -874,9 +872,16 @@ int main(int argc, char *argv[])
 
 
         // For 2D game use orthographic projection
-        glm::mat4 view = camera.GetViewMatrix();
-        glm::mat4 projection = glm::ortho(-WORLD_HALF_WIDTH, WORLD_HALF_WIDTH, -WORLD_HALF_HEIGHT, WORLD_HALF_HEIGHT, 0.1f, 100.0f);
-        
+        glm::mat4 view = glm::mat4(1.0f);
+        view = glm::translate(view, glm::vec3(0.0f, 0.0f, -5.0f));
+        glm::mat4 projection = glm::ortho(
+            -WORLD_HALF_WIDTH, 
+            WORLD_HALF_WIDTH, 
+            -WORLD_HALF_HEIGHT, 
+            WORLD_HALF_HEIGHT, 
+            0.1f, 
+            100.0f
+        );
 
 
         // ===== MENU STATE =====
