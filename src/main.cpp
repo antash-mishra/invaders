@@ -88,6 +88,23 @@ struct ParallaxLayer {
         : texture(tex), scrollSpeed(speed), offsetX(0.0f), name(layerName) {}
 };
 
+// Level difficulty parameters
+struct LevelConfig {
+    float enemySpeed;           // Base enemy movement speed
+    float formationSwaySpeed;   // How fast formation moves side to side
+    float formationSwayAmount; // How far formation moves side to side
+    float attackInterval;      // Time between enemy attacks
+    float attackSpeed;         // Speed of attacking enemies
+    int maxSimultaneousAttacks; // Max enemies attacking at once
+    float bulletSpeedMultiplier; // Enemy bullet speed (if you add enemy bullets)
+    
+    LevelConfig(float speed = 1.0f, float swaySpeed = 0.5f, float swayAmount = 0.3f,
+                float interval = 2.0f, float attackSpd = 0.8f, int maxAttacks = 2)
+        : enemySpeed(speed), formationSwaySpeed(swaySpeed), formationSwayAmount(swayAmount),
+          attackInterval(interval), attackSpeed(attackSpd), maxSimultaneousAttacks(maxAttacks),
+          bulletSpeedMultiplier(1.0f) {}
+};
+
 // ===== COLLISION DETECTION =====
 // Simple circular collision detection
 bool checkCollision(glm::vec2 pos1, float radius1, glm::vec2 pos2, float radius2) {
@@ -104,6 +121,7 @@ const float BULLET_RADIUS = 0.05f;      // Bullet collision radius
 enum class GameState { 
     MENU, 
     PLAYING, 
+    LEVEL_COMPLETE,
     GAME_OVER, 
     GAME_WON 
 };
@@ -131,6 +149,31 @@ Shader* textShaderPtr = nullptr;
 // ===== GAME STATE =====
 int playerScore = 0;
 int playerLives = 3;
+
+// ===== LEVEL SYSTEM =====
+int currentLevel = 1;
+int maxLevel = 10;  // Maximum level (or set to -1 for infinite)
+bool levelComplete = false;
+float levelTransitionTimer = 0.0f;
+const float LEVEL_TRANSITION_DURATION = 3.0f;  // 3 seconds between levels
+
+// Difficulty progression for each level
+std::vector<LevelConfig> levelConfigs = {
+    LevelConfig(1.0f, 0.5f, 0.3f, 2.0f, 0.8f, 2),   // Level 1
+    LevelConfig(1.2f, 0.6f, 0.4f, 1.8f, 0.9f, 2),   // Level 2
+    LevelConfig(1.4f, 0.7f, 0.5f, 1.6f, 1.0f, 3),   // Level 3
+    LevelConfig(1.6f, 0.8f, 0.6f, 1.4f, 1.1f, 3),   // Level 4
+    LevelConfig(1.8f, 0.9f, 0.7f, 1.2f, 1.2f, 4),   // Level 5
+    LevelConfig(2.0f, 1.0f, 0.8f, 1.0f, 1.3f, 4),   // Level 6
+    LevelConfig(2.2f, 1.1f, 0.9f, 0.9f, 1.4f, 5),   // Level 7
+    LevelConfig(2.4f, 1.2f, 1.0f, 0.8f, 1.5f, 5),   // Level 8
+    LevelConfig(2.6f, 1.3f, 1.1f, 0.7f, 1.6f, 6),   // Level 9
+    LevelConfig(2.8f, 1.4f, 1.2f, 0.6f, 1.7f, 6),   // Level 10
+};
+
+// Current level configuration
+LevelConfig currentLevelConfig;
+
 
 const int MAX_BULLETS = 10;  // Maximum bullets on screen
 const float BULLET_SPEED = 6.0f;  // Speed of bullet movement
@@ -535,15 +578,16 @@ void updateEnemies(float deltaTime) {
         if (!enemies[i].isAlive) continue;
 
         // Update animation timer
-        enemies[i].animationTimer += deltaTime;
+        enemies[i].animationTimer += deltaTime * currentLevelConfig.enemySpeed;
 
         // Formation movement (side-to-side like Galaxian)
-        float formationSway = sin(currentTime * 0.5f) * 0.3f;
+        float formationSway = sin(currentTime * currentLevelConfig.formationSwaySpeed) * currentLevelConfig.formationSwayAmount;
         enemies[i].position.x = enemies[i].formationPosition.x + formationSway;
 
-        // Start dual attack if enough time has passed and no enemies are attacking
-        if (!enemies[i].isAttacking && attackingCount == 0 && 
-            (currentTime - lastAttackTime) >= ATTACK_INTERVAL) {
+        // Start dual attack if enough time has passed and no enemies are attacking 
+        if (!enemies[i].isAttacking && 
+            attackingCount < currentLevelConfig.maxSimultaneousAttacks && 
+            (currentTime - lastAttackTime) >= currentLevelConfig.attackInterval) {
             
             // Find leftmost and rightmost alive enemies
             int leftmostIndex = -1, rightmostIndex = -1;
@@ -581,7 +625,7 @@ void updateEnemies(float deltaTime) {
                     enemies[i].attackPattern = 0; // Left curve from right side
                 }
                 
-                enemies[i].attackSpeed = 0.8f + (rand() % 100) / 300.0f; // Vary speed
+                enemies[i].attackSpeed = currentLevelConfig.attackSpeed;
                 
                 if (i == leftmostIndex) {
                     lastAttackTime = currentTime; // Set timer only once
@@ -633,6 +677,85 @@ void updateEnemies(float deltaTime) {
     }
     
     // Win condition will be checked in main loop
+}
+
+// Initialize level
+void initializeLevel(int level) {
+    std::cout << "Initializing level " << currentLevel << std::endl;
+
+    // Get level config
+    if (level <= (int)levelConfigs.size()) {
+        currentLevelConfig = levelConfigs[level - 1];
+    } else {
+        float multiplier = 1.0f + (level - 1) * 0.2f;
+        currentLevelConfig = LevelConfig(
+            2.8f * multiplier,   // enemySpeed
+            1.4f * multiplier,   // formationSwaySpeed
+            1.2f * multiplier,   // formationSwayAmount
+            std::max(0.3f, 0.6f/multiplier),   // attackInterval
+            1.7f * multiplier,   // attackSpeed
+            std::min(8, 6+ (level-10))
+        );
+    }
+
+    // Reset enemy formation
+    initializeEnemies();
+
+    // Reset game timer
+    lastAttackTime = 0.0f;
+    lastBulletTime = 0.0f;
+
+    // CLear any bullet
+    for (int i = 0; i < MAX_BULLETS; i++) {
+        bullets[i].isActive = false;
+    }
+
+    for (int i=0; i<MAX_EXPLOSIONS; i++) {
+        explosions[i].isActive = false;
+    }
+
+    std::cout << "Level " << level << " - Speed: " << currentLevelConfig.enemySpeed 
+              << ", Attack Interval: " << currentLevelConfig.attackInterval << std::endl;
+    
+}
+
+void completeLevel() {
+    levelComplete = true;
+    levelTransitionTimer = 0.0f;
+    
+    gameState = GameState::LEVEL_COMPLETE;
+    int levelBonus = 1000 * currentLevel;
+    playerScore += levelBonus;
+    std::cout << "Level " << currentLevel << " completed! Bonus: " << levelBonus << std::endl;
+
+}
+
+void advanceToNextLevel() {
+    currentLevel++;
+    levelComplete = false;
+
+    // Check if this is the last level
+    if (maxLevel > 0 && currentLevel > maxLevel) {
+        gameState = GameState::GAME_WON;
+        std::cout << "You Won! Final Score: " << playerScore << std::endl;
+    } else {
+        initializeLevel(currentLevel);
+        gameState = GameState::PLAYING;
+    }
+}
+
+void resetGame() {
+    currentLevel = 1;
+    playerScore = 0;
+    playerLives = 3;
+    levelComplete = false;
+    levelTransitionTimer = 0.0f;
+    playerPosition = glm::vec3(0.0f, -2.0f, 0.0f);
+    
+    initializeLevel(currentLevel);
+    gameState = GameState::PLAYING;
+    
+    std::cout << "Game reset to Level 1" << std::endl;
 }
 
 int main(int argc, char *argv[])
@@ -711,6 +834,9 @@ int main(int argc, char *argv[])
     
     // Initialize menu system
     initMenuButtons();
+
+    // Initialize level system
+    initializeLevel(currentLevel);
     
     // Setup text rendering VAO
     glGenVertexArrays(1, &textVAO);
@@ -859,9 +985,16 @@ int main(int argc, char *argv[])
             if (playerLives <= 0) {
                 gameState = GameState::GAME_OVER;
                 std::cout << "Game Over! Final Score: " << playerScore << std::endl;
-            } else if (aliveEnemyPositions.empty()) {
-                gameState = GameState::GAME_WON;
-                std::cout << "You Won! Final Score: " << playerScore << std::endl;
+            } else if (aliveEnemyPositions.empty() && !levelComplete) {
+                completeLevel();
+            }
+        }
+
+        // Handle level transition state
+        if (gameState == GameState::LEVEL_COMPLETE) {
+            levelTransitionTimer += deltaTime;
+            if (levelTransitionTimer >= LEVEL_TRANSITION_DURATION) { // 2 seconds for transition
+                advanceToNextLevel();
             }
         }
 
@@ -947,6 +1080,37 @@ int main(int argc, char *argv[])
                       glm::vec3(1.0f, 1.0f, 0.0f));
             renderText(restartText.c_str(), currentWindowWidth/2.0f - 100.0f, currentWindowHeight/2.0f + 50.0f, 1.5f, 
                       glm::vec3(0.8f, 0.8f, 1.0f));
+            
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+            continue;
+        }
+
+        // ===== LEVEL COMPLETE STATE =====
+        if (gameState == GameState::LEVEL_COMPLETE) {
+            // Render parallax background layers for level complete
+            glDisable(GL_DEPTH_TEST);
+            backgroundShader.use();
+            backgroundShader.setFloat("time", currentFrame);
+            backgroundShader.setFloat("alpha", 1.0f); // Full alpha for starfield visibility
+    
+            glActiveTexture(GL_TEXTURE0);
+            // glBindTexture(GL_TEXTURE_2D, backgroundTexture);
+            glBindVertexArray(backgroundVAO);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glBindVertexArray(0);
+
+            // Render level complete text
+            std::string message = "LEVEL " + std::to_string(currentLevel) + " COMPLETE!";
+            std::string bonusText = "SCORE: " + std::to_string(playerScore);
+            std::string nextLevelText = "ADVANCING TO LEVEL " + std::to_string(currentLevel + 1);
+            
+            renderText(message.c_str(), currentWindowWidth/2.0f - 150.0f, currentWindowHeight/2.0f - 50.0f, 3.0f, 
+                      glm::vec3(1.0f, 1.0f, 1.0f));
+            renderText(bonusText.c_str(), currentWindowWidth/2.0f - 100.0f, currentWindowHeight/2.0f, 2.5f, 
+                      glm::vec3(1.0f, 1.0f, 0.5f));
+            renderText(nextLevelText.c_str(), currentWindowWidth/2.0f - 150.0f, currentWindowHeight/2.0f + 50.0f, 2.5f, 
+                      glm::vec3(1.0f, 1.0f, 1.0f));
             
             glfwSwapBuffers(window);
             glfwPollEvents();
@@ -1056,6 +1220,15 @@ int main(int argc, char *argv[])
             }
         }
 
+        // Add HUD display
+        std::string levelText = "LEVEL: " + std::to_string(currentLevel);
+        std::string scoreText = "SCORE: " + std::to_string(playerScore);
+        std::string livesText = "LIVES: " + std::to_string(playerLives);
+
+        renderText(levelText.c_str(), 20.0f, 20.0f, 1.5f, glm::vec3(1.0f, 1.0f, 1.0f));
+        renderText(scoreText.c_str(), 20.0f, 50.0f, 1.5f, glm::vec3(1.0f, 1.0f, 0.0f));
+        renderText(livesText.c_str(), 20.0f, 80.0f, 1.5f, glm::vec3(1.0f, 0.0f, 0.0f));
+
         // Update audio listener position to follow player
         if (audioManager) {
             audioManager->setListenerPosition(playerPosition.x, playerPosition.y, 0.0f);
@@ -1144,25 +1317,14 @@ void processInput(GLFWwindow *window) {
     if ((gameState == GameState::GAME_OVER || gameState == GameState::GAME_WON) && 
         glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
         // Reset game state
-        gameState = GameState::PLAYING;
-        playerScore = 0;
-        playerLives = 3;
-        playerPosition = glm::vec3(0.0f, -2.0f, 0.0f);
-        
-        // Reset enemies
-        initializeEnemies();
-        
-        // Reset bullets
-        for (int i = 0; i < MAX_BULLETS; i++) {
-            bullets[i].isActive = false;
-        }
-        
-        // Reset explosions
-        for (int i = 0; i < MAX_EXPLOSIONS; i++) {
-            explosions[i].isActive = false;
-        }
-        
-        std::cout << "Game restarted!" << std::endl;
+        resetGame(); // Use new reset function
+        return;
+    }
+
+    // Allow skipping level transition
+    if (gameState == GameState::LEVEL_COMPLETE && 
+        glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+        advanceToNextLevel();
         return;
     }
 
