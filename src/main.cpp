@@ -50,12 +50,14 @@ struct Enemy {
     glm::vec2 attackTargetPos;   // Target position for attack
     int attackPattern;           // 0=left curve, 1=right curve, 2=direct
     float attackSpeed;           // Speed of attack movement
+    bool hasFired;              // Whether the enemy has already fired in the current attack
+    int bulletsFired;           // Number of bullets fired during current attack
 
     Enemy() : position(0.0f), velocity(0.0f), isAlive(true), type(GRUNT),
               health(1.0f), scale(1.0f), animationTimer(0.0f),
               isAttacking(false), formationPosition(0.0f),
               attackTimer(0.0f), attackStartPos(0.0f), attackTargetPos(0.0f),
-              attackPattern(0), attackSpeed(0.7f) {}
+              attackPattern(0), attackSpeed(0.7f), hasFired(false), bulletsFired(0) {}
 };
  
 // ===== BULLET SYSTEM =====
@@ -67,6 +69,14 @@ struct Bullet {
     Bullet() : position(0.0f), velocity(0.0f), isActive(false) {}
 };
 
+struct EnemyBullet {
+    glm::vec2 position;
+    glm::vec2 velocity;
+    bool isActive;
+    
+    EnemyBullet() : position(0.0f), velocity(0.0f), isActive(false) {}
+};
+
 struct Explosion {
     glm::vec2 position;
     float timer;
@@ -75,6 +85,7 @@ struct Explosion {
     
     Explosion() : position(0.0f), timer(0.0f), duration(1.0f), isActive(false) {}
 };
+
 
 // ===== PARALLAX BACKGROUND SYSTEM =====
 struct ParallaxLayer {
@@ -86,6 +97,18 @@ struct ParallaxLayer {
     ParallaxLayer() : texture(0), scrollSpeed(0.0f), offsetX(0.0f) {}
     ParallaxLayer(unsigned int tex, float speed, const std::string& layerName) 
         : texture(tex), scrollSpeed(speed), offsetX(0.0f), name(layerName) {}
+};
+
+// ===== TEXT RENDERING SYSTEM =====
+struct TextButton {
+    std::string text;
+    float pixelX, pixelY, scale;
+    glm::vec3 color;
+    glm::vec4 bounds;  // NDC bounds for clicking (x0,y0,x1,y1)
+    bool isHovered = false;
+    
+    TextButton(const std::string& txt, float x, float y, float s, glm::vec3 col) 
+        : text(txt), pixelX(x), pixelY(y), scale(s), color(col), bounds(0.0f) {}
 };
 
 // Level difficulty parameters
@@ -127,17 +150,7 @@ enum class GameState {
 };
 GameState gameState = GameState::MENU;
 
-// ===== TEXT RENDERING SYSTEM =====
-struct TextButton {
-    std::string text;
-    float pixelX, pixelY, scale;
-    glm::vec3 color;
-    glm::vec4 bounds;  // NDC bounds for clicking (x0,y0,x1,y1)
-    bool isHovered = false;
-    
-    TextButton(const std::string& txt, float x, float y, float s, glm::vec3 col) 
-        : text(txt), pixelX(x), pixelY(y), scale(s), color(col), bounds(0.0f) {}
-};
+// ===== TEXT RENDERING INITIALIZATION =====
 
 std::vector<TextButton> menuButtons;
 
@@ -223,6 +236,16 @@ const float ATTACK_INTERVAL = 2.0f;  // Time between attacks (2 seconds)
 // Bullet timing control
 float lastBulletTime = 0.0f;
 const float BULLET_COOLDOWN = 0.50f;  // 0.50 seconds between bullets
+
+// Enemy bullet constants
+const int MAX_ENEMY_BULLETS = 20;  // Maximum enemy bullets on screen
+const float ENEMY_BULLET_SPEED = 3.0f;  // Slightly slower than player bullets
+const float NON_ATTACKING_SHOOT_INTERVAL = 7.0f;  // Random shooting interval for non-attacking enemies
+const float NEAREST_SHOOT_INTERVAL = 3.0f;  // More frequent shooting for nearest enemies
+
+// enemy game state variables
+std::vector<EnemyBullet> enemyBullets(MAX_ENEMY_BULLETS);
+float lastNonAttackingShootTime = 0.0f;
 
 // Mouse initial position
 float lastX = SCREEN_WIDTH/2.0;
@@ -326,7 +349,9 @@ void initializeEnemies() {
             enemies[index].scale = 0.25f;
             enemies[index].animationTimer = 0.0f;
             enemies[index].isAttacking = false;
+            enemies[index].hasFired = false;
             enemies[index].type = GRUNT;
+            enemies[index].bulletsFired = 0;
 
             index++;
         }
@@ -399,6 +424,88 @@ void updateBullets(float deltaTime) {
         }
     }
 }
+
+// Create enemy bullet at enemy position
+// Add this function after createBullet()
+void createEnemyBullet(const Enemy& enemy) {
+    for (int i = 0; i < MAX_ENEMY_BULLETS; i++) {
+        if (!enemyBullets[i].isActive) {
+            // Play shoot sound (optional - use a different sound than player)
+            if (audioManager) {
+                audioManager->play3DSound("laser", enemy.position.x, enemy.position.y, 0.0f, 0.3f);
+            }
+            
+            enemyBullets[i].position = enemy.position;
+            
+            // Calculate direction towards player
+            glm::vec2 dirToPlayer = glm::normalize(
+                glm::vec2(playerPosition.x, playerPosition.y) - enemy.position
+            );
+            
+            // Add slight randomness to shooting direction
+            float randomAngle = (rand() % 40 - 20) * 0.01f; // ±20 degrees
+            float cs = cos(randomAngle);
+            float sn = sin(randomAngle);
+            glm::vec2 randomizedDir = glm::vec2(
+                dirToPlayer.x * cs - dirToPlayer.y * sn,
+                dirToPlayer.x * sn + dirToPlayer.y * cs
+            );
+            
+            enemyBullets[i].velocity = randomizedDir * ENEMY_BULLET_SPEED;
+            enemyBullets[i].isActive = true;
+            break;
+        }
+    }
+}
+
+// Update enemy bullets
+void updateEnemyBullets(float deltaTime) {
+    for (int i=0; i<MAX_ENEMY_BULLETS; i++) {
+        if (enemyBullets[i].isActive) {
+            // Move bullet towards player
+            enemyBullets[i].position += enemyBullets[i].velocity * deltaTime;
+            
+            // Check collision with player
+            if (checkCollision(enemyBullets[i].position, BULLET_RADIUS, 
+                               glm::vec2(playerPosition.x, playerPosition.y), PLAYER_RADIUS)) {
+                // PLAY EXPLOSION SOUND
+                if (audioManager) {
+                    audioManager->play3DSound("explosion", 
+                                              playerPosition.x, 
+                                              playerPosition.y, 
+                                              0.0f, 
+                                              0.5f); // Volume
+                }
+                
+                // Deactivate bullet
+                enemyBullets[i].isActive = false;
+                // Player hit!
+                playerLives--;
+
+                std::cout << "Player hit! Lives remaining: " << playerLives << std::endl;
+
+                // Create explosion at player position
+                createExplosion(enemyBullets[i].position);
+                
+                // Check game over condition
+                if (playerLives <= 0) {
+                    gameState = GameState::GAME_OVER;
+                    std::cout << "Game Over!" << std::endl;
+                }
+                continue; // No need to check further
+            }
+            
+            // Deactivate bullet if it goes off screen
+            if (enemyBullets[i].position.y < -WORLD_HALF_HEIGHT - 1.0f ||
+                enemyBullets[i].position.y > WORLD_HALF_HEIGHT + 1.0f ||
+                enemyBullets[i].position.x < -WORLD_HALF_WIDTH - 1.0f ||
+                enemyBullets[i].position.x > WORLD_HALF_WIDTH + 1.0f) {
+                enemyBullets[i].isActive = false;
+            }
+        }
+    }
+}
+
 
 // ===== TEXT RENDERING FUNCTIONS =====
 glm::vec4 calculateTextBounds(const char* text, float x, float y, float scale) {
@@ -566,11 +673,44 @@ void updateEnemies(float deltaTime) {
     
     float currentTime = glfwGetTime();
     int attackingCount = 0;
+    float nearestDistance = FLT_MAX;
+    Enemy* nearestEnemy = nullptr;
 
     // Count currently attacking enemies
     for (int i = 0; i < TOTAL_ENEMIES; i++) {
-        if (enemies[i].isAlive && enemies[i].isAttacking) {
-            attackingCount++;
+        if (enemies[i].isAlive) {
+            float dist = glm::length(glm::vec2(playerPosition.x, playerPosition.y) - enemies[i].position);
+            // Find nearest enemy
+            if (dist < nearestDistance) {
+                nearestDistance = dist;
+                nearestEnemy = &enemies[i];
+            }
+            
+            // Increasing enemy attack count
+            if(enemies[i].isAttacking) {
+                attackingCount++;
+            }
+        }
+    }
+
+    int leftmostIndex = -1, rightmostIndex = -1 ;
+    if (attackingCount < currentLevelConfig.maxSimultaneousAttacks &&
+    (currentTime - lastAttackTime) >= currentLevelConfig.attackInterval) {
+        float leftmostX = FLT_MAX;
+        float rightmostX = -FLT_MAX;
+
+        for (int j=0; j<TOTAL_ENEMIES; j++) {
+            if(!enemies[j].isAlive ||  enemies[j].isAttacking) continue;
+
+            if (enemies[j].formationPosition.x < leftmostX) {
+                leftmostX = enemies[j].formationPosition.x;
+                leftmostIndex = j;
+            }
+
+            if (enemies[j].formationPosition.x > rightmostX) {
+                rightmostIndex = enemies[j].formationPosition.x;
+                rightmostIndex = j;
+            }
         }
     }
 
@@ -589,27 +729,11 @@ void updateEnemies(float deltaTime) {
             attackingCount < currentLevelConfig.maxSimultaneousAttacks && 
             (currentTime - lastAttackTime) >= currentLevelConfig.attackInterval) {
             
-            // Find leftmost and rightmost alive enemies
-            int leftmostIndex = -1, rightmostIndex = -1;
-            float leftmostX = 999.0f, rightmostX = -999.0f;
-            
-            for (int j = 0; j < TOTAL_ENEMIES; j++) {
-                if (enemies[j].isAlive && !enemies[j].isAttacking) {
-                    if (enemies[j].formationPosition.x < leftmostX) {
-                        leftmostX = enemies[j].formationPosition.x;
-                        leftmostIndex = j;
-                    }
-                    if (enemies[j].formationPosition.x > rightmostX) {
-                        rightmostX = enemies[j].formationPosition.x;
-                        rightmostIndex = j;
-                    }
-                }
-            }
-            
             // Start attack for both leftmost and rightmost enemies
             if (i == leftmostIndex || (i == rightmostIndex && leftmostIndex != rightmostIndex)) {
                 enemies[i].isAttacking = true;
                 enemies[i].attackTimer = 0.0f;
+                enemies[i].hasFired = false;
                 enemies[i].attackStartPos = enemies[i].position;
                 
                 // Set target position (toward player with some randomness)
@@ -645,6 +769,7 @@ void updateEnemies(float deltaTime) {
                 newPosition.x < -5.0f || newPosition.x > 5.0f) {
                 enemies[i].isAlive = false; // Destroy permanently
                 enemies[i].isAttacking = false;
+                attackingCount--;
             } else {
                 // Only update position if within bounds
                 enemies[i].position = newPosition;
@@ -652,7 +777,7 @@ void updateEnemies(float deltaTime) {
         }
 
         // Check collision with player
-        if (enemies[i].isAlive && gameState == GameState::PLAYING &&
+        if (gameState == GameState::PLAYING &&
             checkCollision(enemies[i].position, ENEMY_RADIUS, 
                          glm::vec2(playerPosition.x, playerPosition.y), PLAYER_RADIUS)) {
 
@@ -672,6 +797,42 @@ void updateEnemies(float deltaTime) {
 
         // Add to alive positions for rendering
         if (enemies[i].isAlive) {
+            // Attacking enemy shooting
+            if (enemies[i].isAttacking) {
+                if (!enemies[i].hasFired) {
+                    // Timed shots during dive
+                    const float FIRST_SHOT_TIME  = 0.7f; // seconds since dive start
+                    const float SECOND_SHOT_TIME = 1.4f;
+
+                    if (enemies[i].bulletsFired < 1 && enemies[i].attackTimer >= FIRST_SHOT_TIME) {
+                        createEnemyBullet(enemies[i]);
+                        enemies[i].bulletsFired++;
+                        if (enemies[i].bulletsFired >= 2) enemies[i].hasFired = true;
+                    }
+                    else if (enemies[i].bulletsFired < 2 && enemies[i].attackTimer >= SECOND_SHOT_TIME) {
+                        createEnemyBullet(enemies[i]);
+                        enemies[i].bulletsFired++;
+                        if (enemies[i].bulletsFired >= 2) enemies[i].hasFired = true;
+                    }
+                }
+            }
+            // Non-Attacking enemies shooting
+            else {
+
+                if (&enemies[i] == nearestEnemy) {
+                    if (currentTime - lastNonAttackingShootTime > NEAREST_SHOOT_INTERVAL &&
+                    (rand() % 100) < 40) {
+                        createEnemyBullet(enemies[i]);
+                        lastNonAttackingShootTime = currentTime;
+                    }
+                } else {
+                    if (currentTime - lastNonAttackingShootTime > NON_ATTACKING_SHOOT_INTERVAL &&
+                        (rand() % 100) < 10) {
+                            createEnemyBullet(enemies[i]);
+                            lastNonAttackingShootTime = currentTime;
+                    }
+                }
+            }
             aliveEnemyPositions.push_back(enemies[i].position);
         }
     }
@@ -904,6 +1065,17 @@ int main(int argc, char *argv[])
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
     glBindVertexArray(0);
 
+    // setup enemy shot VAO use same VBO from bullet
+    unsigned int enemyShotVAO;
+    glGenVertexArrays(1, &enemyShotVAO);
+    glBindVertexArray(enemyShotVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, bulletVBO); // Reuse bullet VBO
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+
     // Setup explosion VAO (using same quad as enemies)
     unsigned int explosionVAO, explosionVBO;
     glGenVertexArrays(1, &explosionVAO);
@@ -939,6 +1111,9 @@ int main(int argc, char *argv[])
     
     // Load missile texture
     unsigned int missileTexture = loadTexture(parentDir + "/resources/spaceship-pack/missiles.png");
+
+    // Load enemy missile texture
+    unsigned int enemyMissileTexture = loadTexture(parentDir + "/resources/spaceship-pack/shot-2.png");
 
     // shader configuration
     // --------------------
@@ -979,6 +1154,7 @@ int main(int argc, char *argv[])
         if (gameState == GameState::PLAYING) {
             updateEnemies(deltaTime);
             updateBullets(deltaTime);
+            updateEnemyBullets(deltaTime);
             updateExplosions(deltaTime);
             
             // Check win/lose conditions
@@ -1165,7 +1341,7 @@ int main(int argc, char *argv[])
             glBindVertexArray(0);
         }
 
-        // Draw bullets
+        // Draw player bullets
         for (int i = 0; i < MAX_BULLETS; i++) {
             if (bullets[i].isActive) {
                 enemyShader.use(); // Reuse enemy shader for bullets
@@ -1183,6 +1359,22 @@ int main(int argc, char *argv[])
                 glBindVertexArray(bulletVAO);
                 glDrawArrays(GL_TRIANGLES, 0, 6);
                 glBindVertexArray(0);
+            }
+        }
+
+        // Draw Enemy Bullets
+        enemyShader.use();
+        for (int i = 0; i < MAX_ENEMY_BULLETS; i++) {
+            if (enemyBullets[i].isActive) {
+                glm::mat4 bulletModel = glm::mat4(1.0f);
+                bulletModel = glm::translate(bulletModel, glm::vec3(enemyBullets[i].position.x, enemyBullets[i].position.y, 0.0f));
+                bulletModel = glm::scale(bulletModel, glm::vec3(0.7f, 0.7f, 1.0f));
+                enemyShader.setMat4("model", bulletModel);
+        
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, enemyMissileTexture);
+                glBindVertexArray(bulletVAO);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
             }
         }
 
