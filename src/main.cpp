@@ -149,6 +149,10 @@ enum class GameState {
     GAME_WON 
 };
 GameState gameState = GameState::MENU;
+GameState prevGameState = GameState::MENU; // Track state changes for audio
+
+// Background music control
+const char* BACKGROUND_TRACK = "background"; // key for audio manager
 
 // ===== TEXT RENDERING INITIALIZATION =====
 
@@ -971,9 +975,15 @@ int main(int argc, char *argv[])
     } else {
         // Load sound effects
         std::string audioDir = parentDir + "/resources/audio/FreeSFX/GameSFX/";
+        std::string backgroundDir = parentDir + "/resources/audio/";
         audioManager->loadSound("hit", audioDir + "Explosion/Retro Explosion Short 01.wav");
         audioManager->loadSound("laser", audioDir + "Weapon/laser/Retro Gun Laser SingleShot 01.wav");
         audioManager->loadSound("explosion", audioDir + "Impact/Retro Impact LoFi 09.wav");
+
+        // Load background music track (ensure file exists)
+        audioManager->loadSound(BACKGROUND_TRACK, parentDir + "/resources/audio/background1.wav");
+        // Start menu background music immediately and loop it
+        audioManager->playSound(BACKGROUND_TRACK, 0.5f, 1.0f, true);
         std::cout << "Audio system loaded successfully" << std::endl;
     }
 
@@ -1134,6 +1144,20 @@ int main(int argc, char *argv[])
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
+
+        // Handle background music volume on state change
+        if (gameState != prevGameState) {
+            if (audioManager) {
+                float volume = 0.4f; // default
+                if (gameState == GameState::PLAYING) volume = 0.25f;
+                else if (gameState == GameState::MENU) volume = 0.5f;
+                else if (gameState == GameState::GAME_OVER || gameState == GameState::GAME_WON) volume = 0.35f;
+
+                // Just adjust volume; track is already looping
+                audioManager->setSoundVolume(BACKGROUND_TRACK, volume);
+            }
+            prevGameState = gameState;
+        }
 
         // process input
         // -------------

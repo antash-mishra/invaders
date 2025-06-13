@@ -22,7 +22,10 @@ public:
     bool initialize();
     void cleanup();
     bool loadSound(const std::string& name, const std::string& filepath);
-    void playSound(const std::string& name, float volume = 1.0f, float pitch = 1.0f);
+    void playSound(const std::string& name, float volume = 1.0f, float pitch = 1.0f, bool loop = false);
+    void stopSound(const std::string& name);
+    void stopAllSounds();
+    void setSoundVolume(const std::string& name, float volume);
     void setListenerPosition(float x, float y, float z);
     void play3DSound(const std::string& name, float x, float y, float z, float volume = 1.0f);
 };
