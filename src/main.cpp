@@ -284,33 +284,60 @@ std::vector<ParallaxLayer> parallaxLayers;
 
 // Calculate curved attack position using Bezier curves
 glm::vec2 calculateCurvedAttackPosition(const Enemy& enemy) {
-    float t = enemy.attackTimer * enemy.attackSpeed * 0.3f; // Progress along path
-    
+    // Duration for the full Bezier dive
+    const float phaseOneDuration = 3.0f;
+    float t = enemy.attackTimer / phaseOneDuration;
+
+    // Get world bottom bound for off-screen exit
+    float worldBottomBound = -WORLD_HALF_HEIGHT;
+    float offscreenY = worldBottomBound - 1.5f; // 1.5 units below screen
+
+    // Player position at attack start (use Y from player, X from attackTargetPos for curve variety)
+    glm::vec2 playerPosAtAttack = glm::vec2(enemy.attackTargetPos.x, playerPosition.y);
+
+    // Final target is below the player, off-screen
+    glm::vec2 target = glm::vec2(enemy.attackTargetPos.x, offscreenY);
+
+    // Control points for dramatic curve
+    glm::vec2 start = enemy.attackStartPos;
+    glm::vec2 controlPoint1, controlPoint2;
+    if (enemy.attackPattern == 0) { // Left curve
+        controlPoint1 = glm::vec2(start.x - 2.0f, start.y - 1.0f);
+        controlPoint2 = playerPosAtAttack; // Pass through player
+    } else if (enemy.attackPattern == 1) { // Right curve
+        controlPoint1 = glm::vec2(start.x + 2.0f, start.y - 1.0f);
+        controlPoint2 = playerPosAtAttack; // Pass through player
+    } else { // Direct
+        controlPoint1 = glm::vec2(start.x, start.y - 1.5f);
+        controlPoint2 = playerPosAtAttack; // Pass through player
+    }
+
+    // Clamp t to 1.0 for the full curve, then continue straight down
     if (t <= 1.0f) {
-        glm::vec2 start = enemy.attackStartPos;
-        glm::vec2 target = enemy.attackTargetPos;
-        
-        // Create curved path with control points
-        glm::vec2 controlPoint;
-        
-        if (enemy.attackPattern == 0) { // Left curve
-            controlPoint = glm::vec2(start.x - 2.0f, (start.y + target.y) * 0.5f);
-        } else if (enemy.attackPattern == 1) { // Right curve  
-            controlPoint = glm::vec2(start.x + 2.0f, (start.y + target.y) * 0.5f);
-        } else { // Direct path with slight curve
-            controlPoint = glm::vec2((start.x + target.x) * 0.5f, start.y - 0.5f);
-        }
-        
-        // Quadratic Bezier curve: P(t) = (1-t)²P₀ + 2(1-t)tP₁ + t²P₂
+        // Cubic Bezier: P0=start, P1=control1, P2=player, P3=target (offscreen)
         float invT = 1.0f - t;
-        return invT * invT * start + 
-               2.0f * invT * t * controlPoint + 
-               t * t * target;
+        float invT2 = invT * invT;
+        float invT3 = invT2 * invT;
+        float t2 = t * t;
+        float t3 = t2 * t;
+        return invT3 * start +
+               3.0f * invT2 * t * controlPoint1 +
+               3.0f * invT * t2 * controlPoint2 +
+               t3 * target;
     } else {
-        // Continue moving straight down from target position (no jitter)
-        float extraTime = (t - 1.0f) / (enemy.attackSpeed * 0.3f);
-        return glm::vec2(enemy.attackTargetPos.x, 
-                        enemy.attackTargetPos.y - enemy.attackSpeed * extraTime);
+        // After the curve, continue straight down from the last point
+        float t1 = 1.0f;
+        float invT = 1.0f - t1;
+        float invT2 = invT * invT;
+        float invT3 = invT2 * invT;
+        float t2 = t1 * t1;
+        float t3 = t2 * t1;
+        glm::vec2 endOfCurve = invT3 * start +
+                              3.0f * invT2 * t1 * controlPoint1 +
+                              3.0f * invT * t2 * controlPoint2 +
+                              t3 * target;
+        float extraTime = (enemy.attackTimer - phaseOneDuration);
+        return glm::vec2(endOfCurve.x, endOfCurve.y - enemy.attackSpeed * extraTime * 1.2f);
     }
 }
 
@@ -430,7 +457,6 @@ void updateBullets(float deltaTime) {
 }
 
 // Create enemy bullet at enemy position
-// Add this function after createBullet()
 void createEnemyBullet(const Enemy& enemy) {
     for (int i = 0; i < MAX_ENEMY_BULLETS; i++) {
         if (!enemyBullets[i].isActive) {
