@@ -670,7 +670,7 @@ void initMenuButtons() {
     menuButtons.clear();
     
     // Add GALAXIAN title (centered)
-    const char* titleText = "GALAXIAN";
+    const char* titleText = "INVADERS 1999";
     float titleScale = 4.0f;
     float titleWidth = getTextWidth(titleText, titleScale);
     float titleX = (currentWindowWidth - titleWidth) / 2.0f;
