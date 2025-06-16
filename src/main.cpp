@@ -214,7 +214,7 @@ float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
 // Player position
-glm::vec3 playerPosition = glm::vec3(0.0f, -2.0f, 0.0f);
+glm::vec3 playerPosition = glm::vec3(0.0f, -2.5f, 0.0f);
 const float playerSpeed = 2.0f;
 
 // Screen bounds in world space (for orthographic projection)
@@ -1572,10 +1572,6 @@ void processInput(GLFWwindow *window) {
 
     // Only allow movement and shooting if game is active
     if (gameState == GameState::PLAYING) {
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-            playerPosition.y += moveSpeed;
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-            playerPosition.y -= moveSpeed;
         if(glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
             playerPosition.x -= moveSpeed;
         if(glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
