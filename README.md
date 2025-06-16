@@ -100,8 +100,6 @@ make
 ---
 
 ## 📝 Credits
-
-- **Programming:** [Your Name]
 - **Art & Audio:** See `resources/` for asset licenses and attributions.
 - **Libraries:** GLFW, Assimp, OpenAL-Soft, stb_image, GLM
 
