@@ -24,6 +24,10 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+// ===== Google Play Games JNI globals =====
+static JavaVM* g_javaVM = nullptr;
+static jobject g_mainActivityObj = nullptr; // Global reference to MainActivity for callbacks
+
 // Using GLM for vector math (same as desktop version)
 
 // ===== ENEMY SYSTEM =====
@@ -327,6 +331,10 @@ static GLuint g_explosionVBO = 0;
 static bool g_musicStarted = false;
 // ... existing code ...
 
+// Forward declarations
+static void showLeaderboard();
+static void submitScoreToLeaderboard(long score);
+
 // ==== Helper to recompute spacing and start X so formation fits current world width ====
 static void recalculateFormationLayout() {
     float margin = 0.01f; // half enemy width padding at each side
@@ -593,7 +601,7 @@ void updateEnemyBullets(float deltaTime) {
                 // Check game over condition
                 if (playerLives <= 0) {
                     gameState = GameState::GAME_OVER;
-                    std::cout << "Game Over!" << std::endl;
+                    std::cout << "Game Over! Final Score: " << playerScore << std::endl;
                 }
                 continue; // No need to check further
             }
@@ -772,6 +780,15 @@ void initMenuButtons() {
     TextButton quitButton(quitText, quitX, currentWindowHeight/2.0f + 80.0f, quitScale, glm::vec3(0.8f, 0.8f, 1.0f));
     quitButton.bounds = calculateTextBounds(quitButton.text.c_str(), quitButton.pixelX, quitButton.pixelY, quitButton.scale);
     menuButtons.push_back(quitButton);
+
+    // Add leaderboard button (centered below start)
+    const char* leaderboardText = "LEADERBOARD";
+    float leaderboardScale = 7.5f;
+    float leaderboardWidth = getTextWidth(leaderboardText, leaderboardScale);
+    float leaderboardX = (currentWindowWidth - leaderboardWidth) / 2.0f;
+    TextButton leaderboardButton(leaderboardText, leaderboardX, currentWindowHeight/2.0f + 40.0f, leaderboardScale, glm::vec3(0.0f, 1.0f, 1.0f));
+    leaderboardButton.bounds = calculateTextBounds(leaderboardButton.text.c_str(), leaderboardButton.pixelX, leaderboardButton.pixelY, leaderboardButton.scale);
+    menuButtons.push_back(leaderboardButton);
 }
 
 // Add a global formation phase variable outside the function
@@ -1287,6 +1304,9 @@ void advanceToNextLevel() {
     if (maxLevel > 0 && currentLevel > maxLevel) {
         gameState = GameState::GAME_WON;
         std::cout << "You Won! Final Score: " << playerScore << std::endl;
+
+        // Submit final score upon victory
+        submitScoreToLeaderboard(playerScore);
         updateBackgroundMusicForState();
     } else {
         initializeLevel(currentLevel);
@@ -1574,6 +1594,9 @@ static void renderGame() {
         if (playerLives <= 0) {
             gameState = GameState::GAME_OVER;
             std::cout << "Game Over! Final Score: " << playerScore << std::endl;
+
+            // Submit final score to Google Play Games leaderboard
+            submitScoreToLeaderboard(playerScore);
         } else if (aliveEnemyPositions.empty() && !levelComplete) {
             // Level complete condition
             completeLevel();
@@ -1886,6 +1909,14 @@ Java_com_example_invaders_MainActivity_nativeOnSurfaceCreated(JNIEnv *env, jobje
             g_musicStarted = true;
         }
     }
+
+    // Store JavaVM and activity for callbacks
+    if (!g_javaVM) {
+        env->GetJavaVM(&g_javaVM);
+    }
+    if (!g_mainActivityObj) {
+        g_mainActivityObj = env->NewGlobalRef(thiz);
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -1953,6 +1984,15 @@ Java_com_example_invaders_MainActivity_nativeOnTouchDown(JNIEnv *env, jobject th
                 gameState = GameState::PLAYING;
                 LOGI("Starting game!");
                 updateBackgroundMusicForState();
+                break;
+            }
+
+            // Leaderboard tap
+            if (button.text == "LEADERBOARD" &&
+                ndcX >= button.bounds.x && ndcX <= button.bounds.z &&
+                ndcY >= button.bounds.y && ndcY <= button.bounds.w) {
+                LOGI("Leaderboard button tapped – opening leaderboard UI");
+                showLeaderboard();
                 break;
             }
         }
@@ -2147,4 +2187,42 @@ Java_com_example_invaders_MainActivity_nativeOnDestroy(JNIEnv *env, jobject thiz
     }
     
     g_isInitialized = false;
+
+    if (g_mainActivityObj) {
+        env->DeleteGlobalRef(g_mainActivityObj);
+        g_mainActivityObj = nullptr;
+    }
 }
+
+// ===== Google Play Games bridge =====
+// (duplicate JNI globals removed - definitions are at top)
+// static JavaVM* g_javaVM = nullptr;
+// static jobject g_mainActivityObj = nullptr; // Global ref to be able to call back
+
+static void submitScoreToLeaderboard(long score) {
+    if (!g_javaVM || !g_mainActivityObj) return;
+    JNIEnv* env = nullptr;
+    if (g_javaVM->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    jclass cls = env->GetObjectClass(g_mainActivityObj);
+    if (!cls) return;
+    jmethodID method = env->GetMethodID(cls, "submitScoreJNI", "(J)V");
+    if (method) {
+        env->CallVoidMethod(g_mainActivityObj, method, (jlong)score);
+    }
+}
+
+static void showLeaderboard() {
+    if (!g_javaVM || !g_mainActivityObj) return;
+    JNIEnv* env = nullptr;
+    if (g_javaVM->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    jclass cls = env->GetObjectClass(g_mainActivityObj);
+    if (!cls) return;
+    jmethodID method = env->GetMethodID(cls, "showLeaderboardJNI", "()V");
+    if (method) {
+        env->CallVoidMethod(g_mainActivityObj, method);
+    }
+}
+
+// ... existing code ...
+// Inside game logic when Game Over or Game Won occurs, submit score
+// (add to appropriate sections further below)
