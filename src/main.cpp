@@ -33,6 +33,9 @@ enum EnemyType {
     CAPTAIN = 2
 };
 
+// ===== EXPOSURE =====
+float exposure = 1.0f;
+
 struct Enemy {
     glm::vec2 position;
     glm::vec2 velocity;
@@ -278,6 +281,8 @@ float backgroundVerticesNDC[] = {
      1.0f,  1.0f,       1.0f, 1.0f   // top right
 };
 
+unsigned int quadVAO = 0;
+unsigned int quadVBO;
 
 const int NUM_PARALLAX_LAYERS = 6;
 std::vector<ParallaxLayer> parallaxLayers;
@@ -949,6 +954,33 @@ void resetGame() {
     std::cout << "Game reset to Level 1" << std::endl;
 }
 
+void renderQuad() {
+    if (quadVAO == 0) {
+        float quadVertices[] = {
+            // positions   // texCoords
+            -1.0f,  1.0f,  0.0f, 1.0f,  // top left
+            -1.0f, -1.0f,  0.0f, 0.0f,  // bottom left
+             1.0f, -1.0f,  1.0f, 0.0f,  // bottom right
+            -1.0f,  1.0f,  0.0f, 1.0f,  // top left
+             1.0f, -1.0f,  1.0f, 0.0f,  // bottom right
+             1.0f,  1.0f,  1.0f, 1.0f   // top right
+        };
+        glGenVertexArrays(1, &quadVAO);
+        glGenBuffers(1, &quadVBO);
+        glBindVertexArray(quadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        glBindVertexArray(0);
+    }
+    glBindVertexArray(quadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+}
+
 int main(int argc, char *argv[])
 {
     glfwInit();
@@ -1021,6 +1053,8 @@ int main(int argc, char *argv[])
     Shader parallaxShader((shaderDir + "parallax.vs").c_str(), (shaderDir + "parallax.fs").c_str());
     Shader explosionShader((shaderDir + "explosion.vs").c_str(), (shaderDir + "explosion.fs").c_str());
     Shader textShader((shaderDir + "text.vs").c_str(), (shaderDir + "text.fs").c_str());
+    Shader blurShader((shaderDir + "background.vs").c_str(), (shaderDir + "blur.fs").c_str());
+    Shader hdrShader((shaderDir + "background.vs").c_str(), (shaderDir + "hdr.fs").c_str());
     textShaderPtr = &textShader;
 
     // load player model
@@ -1151,6 +1185,59 @@ int main(int argc, char *argv[])
     // Load enemy missile texture
     unsigned int enemyMissileTexture = loadTexture(parentDir + "/resources/spaceship-pack/shot-2.png");
 
+    // create hdr fbo
+    unsigned int hdrFBO;
+    glGenFramebuffers(1, &hdrFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+
+    // create color buffers for collecting color and brightness
+    unsigned int colorBuffer[2];
+    glGenTextures(2, colorBuffer);
+    for (unsigned int i = 0; i < 2; i++) {
+        glBindTexture(GL_TEXTURE_2D, colorBuffer[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCREEN_WIDTH, SCREEN_HEIGHT, 0, GL_RGB, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, colorBuffer[i], 0);
+    }
+
+    // create render buffer 
+    unsigned int rboDepth;
+    glGenRenderbuffers(1, &rboDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, rboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, SCREEN_WIDTH, SCREEN_HEIGHT);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rboDepth);
+
+    // set the buffers to draw to both attachments
+    unsigned int attachments[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, attachments);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "Framebuffer not complete!" << std::endl;
+    }
+
+    // unbind the fbo
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // ping-pong fbo for blurring 
+    unsigned int pingPongFBO[2];
+    unsigned int pingPongColorBuffer[2];
+    glGenFramebuffers(2, pingPongFBO);
+    glGenTextures(2, pingPongColorBuffer);
+    for (unsigned int i = 0; i < 2; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, pingPongFBO[i]);
+        glBindTexture(GL_TEXTURE_2D, pingPongColorBuffer[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, SCREEN_WIDTH, SCREEN_HEIGHT, 0, GL_RGB, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pingPongColorBuffer[i], 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            std::cerr << "Framebuffer not complete!" << std::endl;
+        }
+    }
+
+    // unbind the fbo
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
     // shader configuration
     // --------------------
     playerShader.use();
@@ -1161,6 +1248,14 @@ int main(int argc, char *argv[])
 
     parallaxShader.use();
     parallaxShader.setInt("backgroundTexture", 0);
+
+    hdrShader.use();
+    hdrShader.setInt("scene", 0);
+    hdrShader.setInt("bloomBlur", 1);
+
+    blurShader.use();
+    blurShader.setInt("image", 0);
+
 
     while (!glfwWindowShouldClose(window))
     {
@@ -1344,6 +1439,10 @@ int main(int argc, char *argv[])
         }
 
         // ===== PLAYING STATE - GAME RENDERING =====
+        glBindFramebuffer(GL_FRAMEBUFFER, hdrFBO);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // render scene normally
         glDisable(GL_DEPTH_TEST);
         backgroundShader.use();
         backgroundShader.setFloat("time", currentFrame);
@@ -1366,6 +1465,16 @@ int main(int argc, char *argv[])
         model = glm::rotate(model, glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
         // model = glm::rotate(model, glm::radians(180.0f), glm::vec3(0.0f, 0.0f, 1.0f));
         playerShader.setMat4("model", model);
+        // Enable glow only when the player is currently moving (A/D or arrow keys pressed)
+        bool playerMoving = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS ||
+                            glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS ||
+                            glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS ||
+                            glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+
+        float glowIntensity = playerMoving ? 10.0f : 0.0f; // No glow when idle
+
+        playerShader.setVec3("glowColor", glm::vec3(1.0f, 0.5f, 0.0f));
+        playerShader.setFloat("glowIntensity", glowIntensity);
         player->Draw(playerShader);
 
         // Draw enemy formation (instanced)
@@ -1462,6 +1571,7 @@ int main(int argc, char *argv[])
             }
         }
 
+
         // Add HUD display
         std::string levelText = "LEVEL: " + std::to_string(currentLevel);
         std::string scoreText = "SCORE: " + std::to_string(playerScore);
@@ -1475,6 +1585,33 @@ int main(int argc, char *argv[])
         if (audioManager) {
             audioManager->setListenerPosition(playerPosition.x, playerPosition.y, 0.0f);
         }
+
+        // blur loop for glow effect
+        bool horizontal = true, first_iteration=true;
+        int amount=10;
+        blurShader.use();
+        for (unsigned int i=0; i<amount; i++) {
+            glBindFramebuffer(GL_FRAMEBUFFER, pingPongFBO[horizontal]);
+            blurShader.setInt("horizontal", horizontal);
+            // glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, first_iteration ? colorBuffer[1] : pingPongColorBuffer[!horizontal]);
+            renderQuad();
+            horizontal = !horizontal;
+            if (first_iteration)
+                first_iteration = false;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // render quad with color buffer and tonemap HDR colors
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        hdrShader.use();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, colorBuffer[0]);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, colorBuffer[1]);
+        hdrShader.setFloat("exposure", exposure);
+        renderQuad();
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         // glfw: swap buffers and poll IO events (keys pressed/released, mouse moved
         // etc.)
@@ -1493,6 +1630,10 @@ int main(int argc, char *argv[])
     glDeleteBuffers(1, &bulletVBO);
     glDeleteVertexArrays(1, &explosionVAO);
     glDeleteBuffers(1, &explosionVBO);
+    glDeleteVertexArrays(1, &quadVAO);
+    glDeleteBuffers(1, &quadVBO);
+    glDeleteFramebuffers(2, pingPongFBO);
+    glDeleteTextures(2, pingPongColorBuffer);
     glDeleteTextures(1, &enemyTexture);
     glDeleteTextures(1, &missileTexture);
     
