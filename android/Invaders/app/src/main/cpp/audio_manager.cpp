@@ -25,7 +25,7 @@ bool AudioManager::initialize(JNIEnv* env, jobject context) {
     }
 
     // Find the AudioManagerJNI class
-    jclass audioManagerClass = env->FindClass("com/example/invaders/AudioManagerJNI");
+    jclass audioManagerClass = env->FindClass("com/antash/invaders/AudioManagerJNI");
     if (!audioManagerClass) {
         LOGE("Failed to find AudioManagerJNI class");
         return false;
@@ -122,12 +122,12 @@ void AudioManager::play3DSound(const std::string& name, float x, float y, float 
     env->CallVoidMethod(audioManagerObject, play3DSoundMethod, jName, x, y, z, volume);
     env->DeleteLocalRef(jName);
 
-    LOGI("Playing 3D sound: %s at (%.2f, %.2f, %.2f)", name.c_str(), x, y, z);
+//    LOGI("Playing 3D sound: %s at (%.2f, %.2f, %.2f)", name.c_str(), x, y, z);
 }
 
 void AudioManager::setListenerPosition(float x, float y, float z) {
     // Not needed for MediaPlayer implementation
-    LOGI("Setting listener position: (%.2f, %.2f, %.2f)", x, y, z);
+//    LOGI("Setting listener position: (%.2f, %.2f, %.2f)", x, y, z);
 }
 
 void AudioManager::cleanup() {

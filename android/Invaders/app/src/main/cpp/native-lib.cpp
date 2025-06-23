@@ -88,7 +88,7 @@ struct Explosion {
     float duration;
     bool isActive;
 
-    Explosion() : position(0.0f), timer(0.0f), duration(1.0f), isActive(false) {}
+    Explosion() : position(0.0f), timer(0.0f), duration(0.5f), isActive(false) {}
 };
 
 // ===== PARALLAX BACKGROUND SYSTEM =====
@@ -125,8 +125,8 @@ struct LevelConfig {
     int maxSimultaneousAttacks; // Max enemies attacking at once
     float enemyBulletSpeedBonus; // Additional speed added to enemy bullets
     
-    LevelConfig(float speed = 1.0f, float swaySpeed = 0.5f, float swayAmount = 0.3f,
-                float interval = 2.0f, float attackSpd = 0.8f, int maxAttacks = 1)
+    LevelConfig(float speed = 1.0f, float swaySpeed = 1.0f, float swayAmount = 0.3f,
+                float interval = 2.0f, float attackSpd = 1.0f, int maxAttacks = 1)
         : enemySpeed(speed), formationSwaySpeed(swaySpeed), formationSwayAmount(swayAmount),
           attackInterval(interval), attackSpeed(attackSpd), maxSimultaneousAttacks(maxAttacks),
           enemyBulletSpeedBonus(0.3f) {}
@@ -134,6 +134,8 @@ struct LevelConfig {
 
 
 std::vector<TextButton> menuButtons;
+// Buttons shown on the Game Over / Win screen
+std::vector<TextButton> gameOverButtons;
 
 // Text rendering globals
 unsigned int textVAO = 0, textVBO = 0;
@@ -177,16 +179,16 @@ const float LEVEL_TRANSITION_DURATION = 3.0f;  // 3 seconds between levels
 
 // Difficulty progression for each level
 std::vector<LevelConfig> levelConfigs = {
-    LevelConfig(1.0f, 0.3f, 0.3f, 2.0f, 0.8f, 1),   // Level 1
-    LevelConfig(1.2f, 0.4f, 0.4f, 1.8f, 0.9f, 2),   // Level 2
-    LevelConfig(1.4f, 0.5f, 0.5f, 1.6f, 1.0f, 2),   // Level 3
-    LevelConfig(1.6f, 0.6f, 0.6f, 1.4f, 1.1f, 2),   // Level 4
+    LevelConfig(1.0f, 0.7f, 0.3f, 2.0f, 0.7f, 1),   // Level 1
+    LevelConfig(1.2f, 0.7f, 0.4f, 1.8f, 0.9f, 2),   // Level 2
+    LevelConfig(1.4f, 0.7f, 0.5f, 1.6f, 1.0f, 2),   // Level 3
+    LevelConfig(1.6f, 0.7f, 0.6f, 1.4f, 1.0f, 3),   // Level 4
     LevelConfig(1.8f, 0.7f, 0.7f, 1.2f, 1.2f, 3),   // Level 5
-    LevelConfig(2.0f, 0.8f, 0.8f, 1.0f, 1.3f, 3),   // Level 6
-    LevelConfig(2.2f, 0.9f, 0.9f, 0.9f, 1.4f, 3),   // Level 7
-    LevelConfig(2.4f, 1.0f, 1.0f, 0.8f, 1.5f, 4),   // Level 8
-    LevelConfig(2.6f, 1.2f, 1.1f, 0.7f, 1.6f, 4),   // Level 9
-    LevelConfig(2.8f, 1.4f, 1.2f, 0.6f, 1.7f, 5),   // Level 10
+    LevelConfig(2.0f, 0.7f, 0.8f, 1.0f, 1.3f, 3),   // Level 6
+    LevelConfig(2.2f, 0.7f, 0.9f, 0.9f, 1.4f, 3),   // Level 7
+    LevelConfig(2.4f, 0.7f, 1.0f, 0.8f, 1.5f, 4),   // Level 8
+    LevelConfig(2.6f, 0.7f, 1.1f, 0.7f, 1.6f, 4),   // Level 9
+    LevelConfig(2.8f, 0.7f, 1.2f, 0.6f, 1.7f, 5),   // Level 10
 };
 
 // Current level configuration
@@ -194,7 +196,7 @@ LevelConfig currentLevelConfig;
 
 
 const int MAX_BULLETS = 10;  // Maximum bullets on screen
-const float BULLET_SPEED = 6.0f;  // Speed of bullet movement
+const float BULLET_SPEED = 4.0f;  // Speed of bullet movement
 static std::vector<Bullet> bullets(MAX_BULLETS);
 
 const int MAX_EXPLOSIONS = 20;
@@ -205,6 +207,8 @@ AudioManager* audioManager = nullptr; // Audio manager for sound effects
 // Screen dimensions
 static int g_screenWidth = 800;
 static int g_screenHeight = 600;
+#define SCREEN_WIDTH  (g_screenWidth)
+#define SCREEN_HEIGHT (g_screenHeight)
 static float g_aspectRatio = 1.33f;
 static bool g_isInitialized = false;
 
@@ -225,6 +229,18 @@ const float playerSpeed = 2.0f;
 const float WORLD_HALF_WIDTH = 4.0f;    // Half the orthographic width
 const float WORLD_HALF_HEIGHT = 3.0f;   // Half the orthographic height
 
+// ---------------- UI SCALING (virtual canvas) ----------------
+// These values allow the menu & HUD to keep identical relative sizes
+// on every phone/tablet resolution.  All UI code continues to work
+// in "virtual pixels" (1080×1920).  We convert to real-screen pixels
+// with uiScale / uiOffset at draw time.
+static const float UI_VIRTUAL_WIDTH  = 1080.0f;
+static const float UI_VIRTUAL_HEIGHT = 1920.0f;
+
+static float uiScale   = 1.0f;  // Multiplier from virtual->real pixels
+static float uiOffsetX = 0.0f;  // Letter-box X offset (real pixels)
+static float uiOffsetY = 0.0f;  // Letter-box Y offset (real pixels)
+// --------------------------------------------------------------
 
 // Enemy formation constants (Galaxian style) - adjusted dynamically for screen bounds
 const int ENEMY_ROWS = 3;
@@ -250,15 +266,15 @@ const float BULLET_COOLDOWN = 0.50f;  // 0.50 seconds between bullets
 
 // Auto-shooting variables
 static bool g_autoShootEnabled = true;  // Enable auto-shooting by default
-static float g_autoShootInterval = 1.2f;  // Starting interval in seconds
+static float g_autoShootInterval = 1.5f;  // Starting interval in seconds
 const float AUTO_SHOOT_DECREASE_PER_LEVEL = 0.1f;  // Decrease interval by 0.1s per level
 const float AUTO_SHOOT_MIN_INTERVAL = 0.7f;  // Minimum interval threshold
 
 // Enemy bullet constants
 const int MAX_ENEMY_BULLETS = 20;  // Maximum enemy bullets on screen
-const float ENEMY_BULLET_SPEED = 1.5f;  // Base enemy bullet speed
-const float NON_ATTACKING_SHOOT_INTERVAL = 7.0f;  // Random shooting interval for non-attacking enemies
-const float NEAREST_SHOOT_INTERVAL = 3.0f;  // More frequent shooting for nearest enemies
+const float ENEMY_BULLET_SPEED = 2.5f;  // Base enemy bullet speed
+const float NON_ATTACKING_SHOOT_INTERVAL = 5.0f;  // Random shooting interval for non-attacking enemies
+const float NEAREST_SHOOT_INTERVAL = 2.0f;  // More frequent shooting for nearest enemies
 
 // enemy game state variables
 std::vector<EnemyBullet> enemyBullets(MAX_ENEMY_BULLETS);
@@ -309,11 +325,14 @@ static GLuint g_enemyTexture = 0;
 static GLuint g_bulletTexture = 0;
 static GLuint g_enemyMissileTexture = 0;
 // Shader objects (same as desktop version)
+static Shader* playerShader = nullptr;
 static Shader* enemyShader = nullptr;
 static Shader* explosionShader = nullptr;
 static Shader* backgroundShader = nullptr;
 static Shader* textShader = nullptr;
 static Shader* parallaxShader = nullptr;
+static Shader* blurShader = nullptr;
+static Shader* hdrShader = nullptr;
 static GLuint g_quadVAO = 0;
 static GLuint g_quadVBO = 0;
 static GLuint g_backgroundVAO = 0;
@@ -326,14 +345,32 @@ static GLuint g_bulletVBO = 0;
 static GLuint g_enemyShotVAO =0;
 static GLuint g_explosionVAO = 0;
 static GLuint g_explosionVBO = 0;
+static GLuint g_normalizedQuadVAO  = 0;
+static GLuint g_normalizedQuadVBO = 0;
+static GLuint g_hdrFBO = 0;
+static GLuint g_colorBuffer[2];
+static GLuint g_rboDepth = 0;
+static GLuint g_pingpongFBO[2];
+static GLuint g_pingpongColorBuffer[2];
+
 
 // ... after other static/global variables ...
 static bool g_musicStarted = false;
-// ... existing code ...
+
+// Pause state management
+static GameState g_savedGameState = GameState::MENU;
+static bool g_wasPaused = false;
+
+// ----- Player glow helpers -----
+static float g_prevPlayerX = 0.0f;
+static bool g_playerMoving = false;
 
 // Forward declarations
 static void showLeaderboard();
 static void submitScoreToLeaderboard(long score);
+static void initGameOverButtons();
+static void quitGame();
+static void vibratePhone(int durationMs);
 
 // ==== Helper to recompute spacing and start X so formation fits current world width ====
 static void recalculateFormationLayout() {
@@ -423,7 +460,7 @@ void createExplosion(glm::vec2 position) {
         if (!explosions[i].isActive) {
             explosions[i].position = position;
             explosions[i].timer = 0.0f;
-            explosions[i].duration = 1.2f;
+            explosions[i].duration = 0.5f; // faster explosion fade
             explosions[i].isActive = true;
             LOGI("Explosion created at (%.2f, %.2f)", position.x, position.y);
             break;
@@ -466,6 +503,29 @@ void initializeEnemies() {
         y -= g_enemySpacingY;
     }
 }
+
+// Helper to update music based on game state
+void updateBackgroundMusicForState() {
+    if (!audioManager) return;
+    switch (gameState) {
+        case GameState::MENU:
+            audioManager->setMusicVolume(0.6f);
+            break;
+        case GameState::PLAYING:
+            audioManager->setMusicVolume(0.4f);
+            break;
+        case GameState::LEVEL_COMPLETE:
+            audioManager->setMusicVolume(0.2f);
+            break;
+        case GameState::GAME_OVER:
+        case GameState::GAME_WON:
+            audioManager->setMusicVolume(0.3f); // Or 0.0f to mute
+            break;
+        default:
+            break;
+    }
+}
+
 
 // Create a new bullet at player position
 void createBullet() {
@@ -588,6 +648,9 @@ void updateEnemyBullets(float deltaTime) {
                                               0.5f); // Volume
                 }
 
+                // Vibrate phone on hit
+                vibratePhone(400);
+
                 // Deactivate bullet
                 enemyBullets[i].isActive = false;
                 // Player hit!
@@ -602,6 +665,11 @@ void updateEnemyBullets(float deltaTime) {
                 if (playerLives <= 0) {
                     gameState = GameState::GAME_OVER;
                     std::cout << "Game Over! Final Score: " << playerScore << std::endl;
+
+                    // Submit final score to Google Play Games leaderboard
+                    submitScoreToLeaderboard(playerScore);
+                    initGameOverButtons();
+                    updateBackgroundMusicForState();
                 }
                 continue; // No need to check further
             }
@@ -635,8 +703,9 @@ glm::vec4 calculateTextBounds(const char* text, float x, float y, float scale) {
 
         for (int i = 0; i < 4; ++i) {
             auto* vertex = reinterpret_cast<float*>(quadData + i * 16);
-            float px = x + vertex[0] * scale;  // vertex[0] is x
-            float py = y + vertex[1] * scale;  // vertex[1] is y
+            // Virtual → real-screen conversion
+            float px = uiOffsetX + (x + vertex[0] * scale) * uiScale;
+            float py = uiOffsetY + (y + vertex[1] * scale) * uiScale;
 
             minX = std::min(minX, px);
             maxX = std::max(maxX, px);
@@ -678,13 +747,13 @@ void renderText(const char* txt, float x, float y, float scale, const glm::vec3&
         for (int i = 0; i < 4; ++i) {
             float* vertex = (float*)(quadData + i * 16);
 
-            // Apply scaling and positioning
-            vx[i] = x + vertex[0] * scale;  // vertex[0] is x
-            vy[i] = y + vertex[1] * scale;  // vertex[1] is y
+            // Apply virtual→real screen mapping
+            float px = uiOffsetX + (x + vertex[0] * scale) * uiScale;
+            float py = uiOffsetY + (y + vertex[1] * scale) * uiScale;
 
             // Convert pixels to NDC using current window dimensions
-            vx[i] =  vx[i] / (currentWindowWidth  * 0.5f) - 1.0f;
-            vy[i] = -vy[i] / (currentWindowHeight * 0.5f) + 1.0f;  // flip Y
+            vx[i] =  px / (currentWindowWidth  * 0.5f) - 1.0f;
+            vy[i] = -py / (currentWindowHeight * 0.5f) + 1.0f;  // flip Y
         }
 
         // Convert quad to two triangles: (0,1,2) and (0,2,3)
@@ -733,6 +802,7 @@ void renderText(const char* txt, float x, float y, float scale, const glm::vec3&
 // Helper function to get text width for centering
 float getTextWidth(const char* text, float scale) {
     char buffer[9999];
+    float x = 0.0f; // dummy variable for compatibility (will be removed when px formula is cleaned)
     int numQuads = stb_easy_font_print(0, 0, (char*)text, nullptr, buffer, sizeof(buffer));
 
     if (numQuads == 0) return 0.0f;
@@ -743,7 +813,8 @@ float getTextWidth(const char* text, float scale) {
         char* quadData = buffer + q * 4 * 16;
         for (int i = 0; i < 4; ++i) {
             float* vertex = (float*)(quadData + i * 16);
-            float px = vertex[0] * scale;  // vertex[0] is x coordinate
+            float px = uiOffsetX + (x + vertex[0] * scale) * uiScale;  // virtual-pixel width only
+            px = vertex[0] * scale;  // virtual-pixel width only
             minX = std::min(minX, px);
             maxX = std::max(maxX, px);
         }
@@ -754,41 +825,112 @@ float getTextWidth(const char* text, float scale) {
 void initMenuButtons() {
     menuButtons.clear();
 
+    const float itemSpacing = 120.0f;
+    const float menuCenterY = UI_VIRTUAL_HEIGHT / 2.0f;
+
     // Add GALAXIAN title (centered)
     const char* titleText = "INVADERS 1999";
     float titleScale = 10.0f;
     float titleWidth = getTextWidth(titleText, titleScale);
-    float titleX = (currentWindowWidth - titleWidth) / 2.0f;
-    TextButton titleButton(titleText, titleX, currentWindowHeight * 0.25f, titleScale, glm::vec3(1.0f, 1.0f, 1.0f));
+    float titleX = (UI_VIRTUAL_WIDTH - titleWidth) * 0.5f;
+    TextButton titleButton(titleText, titleX, UI_VIRTUAL_HEIGHT * 0.25f, titleScale, glm::vec3(1.0f, 1.0f, 1.0f));
     titleButton.bounds = calculateTextBounds(titleButton.text.c_str(), titleButton.pixelX, titleButton.pixelY, titleButton.scale);
     menuButtons.push_back(titleButton);
 
-    // Add start button (centered)
+    // Add start button (slightly above centre)
     const char* startText = "CLICK TO START";
     float startScale = 8.0f;
     float startWidth = getTextWidth(startText, startScale);
-    float startX = (currentWindowWidth - startWidth) / 2.0f;
-    TextButton startButton(startText, startX, currentWindowHeight/2.0f - 20.0f, startScale, glm::vec3(1.0f, 1.0f, 0.0f));
-    startButton.bounds = calculateTextBounds(startButton.text.c_str(), startButton.pixelX, startButton.pixelY, startButton.scale);
+    float startX = (UI_VIRTUAL_WIDTH - startWidth) * 0.5f;
+    TextButton startButton(startText, startX, menuCenterY - itemSpacing * 0.5f, startScale, glm::vec3(1.0f, 1.0f, 0.0f));
+    startButton.bounds = calculateTextBounds(
+        startButton.text.c_str(), 
+        startButton.pixelX, 
+        startButton.pixelY, 
+        startButton.scale
+    );
     menuButtons.push_back(startButton);
 
-    // Add quit button (centered)
-    const char* quitText = "PRESS ESC TO QUIT";
+    // Add leaderboard button at bottom-left corner
+    const char* leaderboardText = "LEADERBOARD";
+    float leaderboardScale = 6.0f; // smaller text
+    const float leaderboardMargin = 30.0f;   // margin from screen edges
+    float leaderboardWidth = getTextWidth(leaderboardText, leaderboardScale);
+    float leaderboardX = UI_VIRTUAL_WIDTH - leaderboardWidth - leaderboardMargin; // right-aligned
+    float leaderboardY = leaderboardMargin;  // top margin
+    TextButton leaderboardButton(
+        leaderboardText,
+        leaderboardX,
+        leaderboardY,
+        leaderboardScale,
+        glm::vec3(0.0f, 1.0f, 1.0f)
+    );
+    leaderboardButton.bounds = calculateTextBounds(
+        leaderboardButton.text.c_str(), 
+        leaderboardButton.pixelX, 
+        leaderboardButton.pixelY, 
+        leaderboardButton.scale
+    );
+    menuButtons.push_back(leaderboardButton);
+
+    // Add quit button (slightly below centre)
+    const char* quitText = "QUIT GAME";
     float quitScale = 7.0f;
     float quitWidth = getTextWidth(quitText, quitScale);
-    float quitX = (currentWindowWidth - quitWidth) / 2.0f;
-    TextButton quitButton(quitText, quitX, currentWindowHeight/2.0f + 80.0f, quitScale, glm::vec3(0.8f, 0.8f, 1.0f));
-    quitButton.bounds = calculateTextBounds(quitButton.text.c_str(), quitButton.pixelX, quitButton.pixelY, quitButton.scale);
+    float quitX = (UI_VIRTUAL_WIDTH - quitWidth) * 0.5f;
+    TextButton quitButton(
+        quitText, quitX,
+        menuCenterY + itemSpacing * 0.5f,
+        quitScale,
+        glm::vec3(0.8f, 0.8f, 1.0f)
+    );
+    quitButton.bounds = calculateTextBounds(
+        quitButton.text.c_str(), 
+        quitButton.pixelX, 
+        quitButton.pixelY, 
+        quitButton.scale
+    );
     menuButtons.push_back(quitButton);
+}
 
-    // Add leaderboard button (centered below start)
-    const char* leaderboardText = "LEADERBOARD";
-    float leaderboardScale = 7.5f;
-    float leaderboardWidth = getTextWidth(leaderboardText, leaderboardScale);
-    float leaderboardX = (currentWindowWidth - leaderboardWidth) / 2.0f;
-    TextButton leaderboardButton(leaderboardText, leaderboardX, currentWindowHeight/2.0f + 40.0f, leaderboardScale, glm::vec3(0.0f, 1.0f, 1.0f));
-    leaderboardButton.bounds = calculateTextBounds(leaderboardButton.text.c_str(), leaderboardButton.pixelX, leaderboardButton.pixelY, leaderboardButton.scale);
-    menuButtons.push_back(leaderboardButton);
+// Initialize buttons for Game Over / Win screens
+void initGameOverButtons() {
+    gameOverButtons.clear();
+
+    // Vertical layout parameters
+    const float itemSpacing = 120.0f;
+    const float centerX      = UI_VIRTUAL_WIDTH  * 0.5f;
+    const float baseY        = UI_VIRTUAL_HEIGHT * 0.55f; // Start a bit below the center
+
+    // Restart button (top)
+    const char* restartTxt = "RESTART";
+    float restartScale = 8.0f;
+    float restartWidth = getTextWidth(restartTxt, restartScale);
+    float restartX     = centerX - restartWidth * 0.5f;
+
+    TextButton restartBtn(restartTxt, restartX, baseY, restartScale, glm::vec3(0.8f, 0.8f, 1.0f));
+    restartBtn.bounds = calculateTextBounds(restartBtn.text.c_str(), restartBtn.pixelX, restartBtn.pixelY, restartBtn.scale);
+    gameOverButtons.push_back(restartBtn);
+
+    // Leaderboard button (middle)
+    const char* leaderboardTxt = "LEADERBOARD";
+    float leaderboardScale = 8.0f;
+    float leaderboardWidth = getTextWidth(leaderboardTxt, leaderboardScale);
+    float leaderboardX     = centerX - leaderboardWidth * 0.5f;
+
+    TextButton leaderboardBtn(leaderboardTxt, leaderboardX, baseY + itemSpacing, leaderboardScale, glm::vec3(0.0f, 1.0f, 1.0f));
+    leaderboardBtn.bounds = calculateTextBounds(leaderboardBtn.text.c_str(), leaderboardBtn.pixelX, leaderboardBtn.pixelY, leaderboardBtn.scale);
+    gameOverButtons.push_back(leaderboardBtn);
+
+    // Main menu button (second)
+    const char* menuTxt   = "MAIN MENU";
+    float menuScale       = 7.5f;
+    float menuWidth       = getTextWidth(menuTxt, menuScale);
+    float menuX           = centerX - menuWidth * 0.5f;
+
+    TextButton menuBtn(menuTxt, menuX, baseY + itemSpacing * 2.0f, menuScale, glm::vec3(1.0f, 1.0f, 0.0f));
+    menuBtn.bounds = calculateTextBounds(menuBtn.text.c_str(), menuBtn.pixelX, menuBtn.pixelY, menuBtn.scale);
+    gameOverButtons.push_back(menuBtn);
 }
 
 // Add a global formation phase variable outside the function
@@ -877,13 +1019,13 @@ void updateEnemies(float deltaTime) {
     if (leftmostEnemyX < worldLeftBound) {
         float offscreenAmount = worldLeftBound - leftmostEnemyX;
         g_maxOffscreenLeft = std::max(g_maxOffscreenLeft, offscreenAmount);
-        LOGI("Enemies offscreen left: %.2f units (max: %.2f)", offscreenAmount, g_maxOffscreenLeft);
+//        LOGI("Enemies offscreen left: %.2f units (max: %.2f)", offscreenAmount, g_maxOffscreenLeft);
     }
     
     if (rightmostEnemyX > worldRightBound) {
         float offscreenAmount = rightmostEnemyX - worldRightBound;
         g_maxOffscreenRight = std::max(g_maxOffscreenRight, offscreenAmount);
-        LOGI("Enemies offscreen right: %.2f units (max: %.2f)", offscreenAmount, g_maxOffscreenRight);
+//        LOGI("Enemies offscreen right: %.2f units (max: %.2f)", offscreenAmount, g_maxOffscreenRight);
     }
 
     // Check if it's time for a new wave of attacks
@@ -894,7 +1036,7 @@ void updateEnemies(float deltaTime) {
     // If we can launch attacks and it's time for new attacks, attempt a wave.
     // We'll reset the timer only after at least one enemy actually starts attacking.
     if (timeForNewAttacks && maxNewAttacksAllowed > 0) {
-        LOGI("Attempting new attack wave. Max allowed: %d", maxNewAttacksAllowed);
+//        LOGI("Attempting new attack wave. Max allowed: %d", maxNewAttacksAllowed);
     }
 
     for (int i = 0; i < TOTAL_ENEMIES; i++) {
@@ -1013,6 +1155,9 @@ void updateEnemies(float deltaTime) {
             enemies[i].isAlive = false; // Destroy the enemy that hit player
             playerLives--;
 
+            // Vibrate phone on collision
+            vibratePhone(400);
+
             LOGI("Player hit! Lives remaining: %d", playerLives);
         }
 
@@ -1106,6 +1251,8 @@ GLuint loadTextureFromAssets(const char* filename) {
         return 0;
     }
     
+    LOGI("Attempting to load texture: %s", filename);
+    
     AAsset* asset = AAssetManager_open(g_assetManager, filename, AASSET_MODE_BUFFER);
     if (!asset) {
         LOGE("Failed to open asset: %s", filename);
@@ -1131,9 +1278,11 @@ GLuint loadTextureFromAssets(const char* filename) {
     AAsset_close(asset); // Close asset after reading into memory
     
     if (!data) {
-        LOGE("Failed to load texture with stb_image: %s", filename);
+        LOGE("Failed to load texture with stb_image: %s - Error: %s", filename, stbi_failure_reason());
         return 0;
     }
+    
+    LOGI("Texture loaded from memory: %s (%dx%d, %d channels)", filename, width, height, nrChannels);
     
     // Generate OpenGL texture (same as desktop version)
     GLuint textureID;
@@ -1195,9 +1344,14 @@ static void drawQuad(float x, float y, float scaleX, float scaleY, float r, floa
 
     // Set uniforms using Shader class methods (like desktop)
     currentShader->setMat4("projection", projMatrix);
+    // Provide the same camera view used in the main rendering path (camera pulled back on -Z)
+    glm::mat4 viewMatrix = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -5.0f));
+    currentShader->setMat4("view", viewMatrix);
     currentShader->setMat4("model", modelMatrix);
     currentShader->setVec3("color", r, g, b);
     currentShader->setFloat("alpha", a);
+
+    // glowColor and glowIntensity (if used) should be set by the caller when needed
 
     // Handle texture
     if (texture) {
@@ -1214,6 +1368,7 @@ static void drawQuad(float x, float y, float scaleX, float scaleY, float r, floa
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
 }
+
 
 // Initialize level
 void initializeLevel(int level) {
@@ -1254,6 +1409,11 @@ void initializeLevel(int level) {
         bullets[i].isActive = false;
     }
 
+    // Clear any enemy bullets that might still be active from a previous game
+    for (int i = 0; i < MAX_ENEMY_BULLETS; i++) {
+        enemyBullets[i].isActive = false;
+    }
+
     for (int i=0; i<MAX_EXPLOSIONS; i++) {
         explosions[i].isActive = false;
     }
@@ -1261,28 +1421,6 @@ void initializeLevel(int level) {
     std::cout << "Level " << level << " - Speed: " << currentLevelConfig.enemySpeed 
               << ", Attack Interval: " << currentLevelConfig.attackInterval << std::endl;
     
-}
-
-// Helper to update music based on game state
-void updateBackgroundMusicForState() {
-    if (!audioManager) return;
-    switch (gameState) {
-        case GameState::MENU:
-            audioManager->setMusicVolume(0.6f);
-            break;
-        case GameState::PLAYING:
-            audioManager->setMusicVolume(0.4f);
-            break;
-        case GameState::LEVEL_COMPLETE:
-            audioManager->setMusicVolume(0.2f);
-            break;
-        case GameState::GAME_OVER:
-        case GameState::GAME_WON:
-            audioManager->setMusicVolume(0.3f); // Or 0.0f to mute
-            break;
-        default:
-            break;
-    }
 }
 
 void completeLevel() {
@@ -1307,6 +1445,7 @@ void advanceToNextLevel() {
 
         // Submit final score upon victory
         submitScoreToLeaderboard(playerScore);
+        initGameOverButtons();
         updateBackgroundMusicForState();
     } else {
         initializeLevel(currentLevel);
@@ -1321,23 +1460,84 @@ void resetGame() {
     playerLives = 3;
     levelComplete = false;
     levelTransitionTimer = 0.0f;
-    playerPosition = glm::vec3(0.0f, -2.0f, 0.0f);
+    playerPosition = glm::vec3(0.0f, -2.5f, 0.0f);
     
     initializeLevel(currentLevel);
     gameState = GameState::PLAYING;
     
-    std::cout << "Game reset to Level 1" << std::endl;
+    std::cout << "G ame reset to Level 1" << std::endl;
     updateBackgroundMusicForState();
+}
+
+void renderQuad() {
+    if (g_normalizedQuadVBO == 0) {
+        float normalizedQuadVertices[] = {
+                // positions             // texCoords
+                -1.0f,  1.0f,  0.0f, 1.0f,  // top left
+                -1.0f, -1.0f,  0.0f, 0.0f,  // bottom left
+                1.0f, -1.0f,  1.0f, 0.0f,  // bottom right
+                -1.0f,  1.0f,  0.0f, 1.0f,  // top left
+                1.0f, -1.0f,  1.0f, 0.0f,  // bottom right
+                1.0f,  1.0f,  1.0f, 1.0f   // top right
+        };
+        glGenVertexArrays(1, &g_normalizedQuadVAO);
+        glGenBuffers(1, &g_normalizedQuadVBO);
+        glBindVertexArray(g_normalizedQuadVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, g_normalizedQuadVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(normalizedQuadVertices), normalizedQuadVertices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        glBindVertexArray(0);
+    }
+    glBindVertexArray(g_normalizedQuadVAO);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+}
+
+void renderLives() {
+    float top    =  WORLD_HALF_HEIGHT;
+    float left   =  -g_aspectRatio * WORLD_HALF_WIDTH;
+    float right  =  g_aspectRatio * WORLD_HALF_WIDTH;
+    const float firstMarginX = 0.15f;   // larger gap from screen edge for the first icon
+    const float spacingX     = 0.06f;   // tighter gap between consecutive icons
+    const float marginY      = 0.4f;
+    const float iconSize     = 0.18f;   // width & height in world units
+
+    for (int i = 0; i < playerLives; ++i) {
+        float glowIntensity = 0.0f; // no glow on life icons
+        playerShader->use();
+        playerShader->setVec3("glowColor", glm::vec3(1.0f, 0.5f, 0.0f));
+        playerShader->setFloat("glowIntensity", glowIntensity);
+
+        float xPos = left + firstMarginX + i * (iconSize + spacingX);
+        drawQuad(xPos, top - marginY, iconSize, iconSize,
+                 1.0f, 1.0f, 1.0f, 1.0f, nullptr, g_playerTexture);
+    }
 }
 
 // Initialize OpenGL resources
 static bool initializeOpenGL() {
+    // Any GL object names obtained from a previous context are now invalid.
+    // Make sure handles that are lazily generated elsewhere are reset so
+    // those helpers recreate them for the new context (especially the full
+    // ‑screen quad used for HDR tonemapping).
+    g_normalizedQuadVAO  = 0;
+    g_normalizedQuadVBO  = 0;
+    
     LOGI("Initializing OpenGL ES");
     
     // Create shaders using Android asset constructor (same API as desktop version)
     enemyShader = new Shader(g_assetManager, "shaders/enemy.vs", "shaders/enemy.fs");
     if (enemyShader->ID == 0) {
         LOGE("Failed to create enemy shader");
+        return false;
+    }
+
+    playerShader = new Shader(g_assetManager, "shaders/player.vs", "shaders/player.fs");
+    if (playerShader->ID == 0) {
+        LOGE("Failed to create player shader");
         return false;
     }
     
@@ -1358,6 +1558,20 @@ static bool initializeOpenGL() {
         LOGE("Failed to create parallax shader");
         return false;
     }
+
+    blurShader = new Shader(g_assetManager, "shaders/background.vs", "shaders/blur.fs");
+    if (blurShader->ID == 0) {
+        LOGE("Failed to create blur shader");
+        return false;
+    }
+
+    hdrShader = new Shader(g_assetManager, "shaders/background.vs", "shaders/hdr.fs");
+    if (hdrShader->ID == 0) {
+        LOGE("Failed to create hdr shader");
+        return false;
+    }
+
+    parallaxShader = new Shader(g_assetManager, "shaders/parallax.vs", "shaders/parallax.fs");
     
     textShader = new Shader(g_assetManager, "shaders/text.vs", "shaders/text.fs");
     if (textShader->ID == 0) {
@@ -1480,10 +1694,28 @@ static bool initializeOpenGL() {
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
     // Load textures
-    g_playerTexture = loadTextureFromAssets("textures/ship_1.png");
+    g_playerTexture = loadTextureFromAssets("textures/ship_6.png");
     g_enemyTexture = loadTextureFromAssets("textures/ship_4.png");
     g_bulletTexture = loadTextureFromAssets("textures/missiles.png");
     g_enemyMissileTexture = loadTextureFromAssets("textures/shot-2.png");
+
+    // Validate texture loading
+    if (g_playerTexture == 0) {
+        LOGE("Failed to load player texture");
+        return false;
+    }
+    if (g_enemyTexture == 0) {
+        LOGE("Failed to load enemy texture");
+        return false;
+    }
+    if (g_bulletTexture == 0) {
+        LOGE("Failed to load bullet texture");
+        return false;
+    }
+    if (g_enemyMissileTexture == 0) {
+        LOGE("Failed to load enemy missile texture");
+        return false;
+    }
 
     std::string layerDir = "textures/background/Super Mountain Dusk Files/Assets/version A/Layers/";
     parallaxLayers.clear();
@@ -1494,13 +1726,88 @@ static bool initializeOpenGL() {
     parallaxLayers.push_back(ParallaxLayer(loadTextureFromAssets((layerDir + "mountains.png").c_str()), 0.5f, "mountains"));    // Medium
     parallaxLayers.push_back(ParallaxLayer(loadTextureFromAssets((layerDir + "trees.png").c_str()), 0.8f, "trees"));          // Fast
     
-    LOGI("Texture IDs loaded: Player=%u, Enemy=%u, Bullet=%u", g_playerTexture, g_enemyTexture, g_bulletTexture);
+    LOGI("Texture IDs loaded: Player=%u, Enemy=%u, Bullet=%u, EnemyMissile=%u", 
+         g_playerTexture, g_enemyTexture, g_bulletTexture, g_enemyMissileTexture);
+
+    // create hdr fbo
+    glGenFramebuffers(1, &g_hdrFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, g_hdrFBO);
+    // color buffer
+    glGenTextures(2, g_colorBuffer);
+    for(unsigned int i=0; i<2; i++) {
+        glBindTexture(GL_TEXTURE_2D, g_colorBuffer[i]);
+        // Use RGBA8 to include alpha channel and match default framebuffer format
+        glTexImage2D(
+            GL_TEXTURE_2D, 0, GL_RGBA16F, g_screenWidth, g_screenHeight, 0, GL_RGBA, GL_HALF_FLOAT, nullptr
+        );
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_TEXTURE_2D, g_colorBuffer[i], 0);
+    }
+
+    // rbo for depth buffer
+    glGenRenderbuffers(1, &g_rboDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, g_rboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, g_screenWidth, g_screenHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_rboDepth);
+    unsigned int attachments[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, attachments);
+    
+    // Check HDR framebuffer status with detailed logging
+    GLenum hdrStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (hdrStatus != GL_FRAMEBUFFER_COMPLETE) {
+        LOGE("HDR Framebuffer is not complete. Status: 0x%x", hdrStatus);
+        if (hdrStatus == GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) {
+            LOGE("GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT");
+        }
+        return false;
+    }
+
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // ping-pong fbo
+    glGenFramebuffers(2, g_pingpongFBO);
+    glGenTextures(2, g_pingpongColorBuffer);
+    for (unsigned int i = 0; i < 2; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, g_pingpongFBO[i]);
+        glBindTexture(GL_TEXTURE_2D, g_pingpongColorBuffer[i]);
+        // Use RGBA8 to include alpha channel and match default framebuffer format
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, g_screenWidth, g_screenHeight, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_pingpongColorBuffer[i], 0);
+        
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            LOGE("Ping-pong Framebuffer %d is not complete. Status: 0x%x", i, status);
+            if (status == GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT) {
+                LOGE("GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT");
+            }
+        }
+    }
+    // unbind fbo
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    playerShader->use();
+    playerShader->setInt("texture_diffuse0", 0);
 
     enemyShader->use();
     enemyShader->setInt("texture_diffuse0", 0);
 
     parallaxShader->use();
     parallaxShader->setInt("backgroundTexture", 0);
+
+    hdrShader->use();
+    hdrShader->setInt("scene", 0);
+    hdrShader->setInt("bloomBlur", 1);
+
+    blurShader->use();
+    blurShader->setInt("image", 0);
     
     // Initialize game
     initializeEnemies();
@@ -1567,7 +1874,30 @@ static void updateGame(float deltaTime) {
         if (audioManager) {
             audioManager->setListenerPosition(playerPosition.x, playerPosition.y, 0.0f);
         }
+        // Win/Lose checks moved here to prevent double stepping
+        if (playerLives <= 0) {
+            gameState = GameState::GAME_OVER;
+            std::cout << "Game Over! Final Score: " << playerScore << std::endl;
+            submitScoreToLeaderboard(playerScore);
+            initGameOverButtons();
+            updateBackgroundMusicForState();
+        } else if (aliveEnemyPositions.empty() && !levelComplete) {
+            completeLevel();
+        }
     }
+
+    // Mark movement while touch drag is happening
+    g_playerMoving = true;
+
+    // Detect movement compared to previous frame (for auto-shoot mode too)
+    if (fabs(playerPosition.x - g_prevPlayerX) > 0.0001f) {
+        g_playerMoving = true;
+    } else {
+        // If player is not being touched and position did not change, stop glow
+        if (!g_isTouching)
+            g_playerMoving = false;
+    }
+    g_prevPlayerX = playerPosition.x;
 }
 
 static void renderGame() {
@@ -1585,21 +1915,11 @@ static void renderGame() {
 
     // Only update game objects if game is active
     if (gameState == GameState::PLAYING) {
-        updateEnemies(g_deltaTime);
-        updateBullets(g_deltaTime);
-        updateEnemyBullets(g_deltaTime);
-        updateExplosions(g_deltaTime);
+        // Check win/lose conditions (simulation already updated in updateGame)
 
-        // Check win/lose conditions
-        if (playerLives <= 0) {
-            gameState = GameState::GAME_OVER;
-            std::cout << "Game Over! Final Score: " << playerScore << std::endl;
-
-            // Submit final score to Google Play Games leaderboard
-            submitScoreToLeaderboard(playerScore);
-        } else if (aliveEnemyPositions.empty() && !levelComplete) {
-            // Level complete condition
-            completeLevel();
+        // Update audio listener position to follow player
+        if (audioManager) {
+            audioManager->setListenerPosition(playerPosition.x, playerPosition.y, 0.0f);
         }
     }
 
@@ -1672,17 +1992,28 @@ static void renderGame() {
 
         glBindVertexArray(0);
 
-        // Render text on top of background
-        std::string message = (gameState == GameState::GAME_OVER) ? "GAME OVER" : "YOU WON!";
-        std::string scoreText = "SCORE: " + std::to_string(playerScore);
-        std::string restartText = "PRESS R TO RESTART";
-        
-        renderText(message.c_str(), currentWindowWidth/2.0f - 200.0f, currentWindowHeight/2.0f - 200.0f, 10.0f,
-                   glm::vec3(1.0f, 0.0f, 0.0f));
-        renderText(scoreText.c_str(), currentWindowWidth/2.0f - 180.0f, currentWindowHeight/2.0f, 8.0f,
-                   glm::vec3(1.0f, 1.0f, 0.0f));
-        renderText(restartText.c_str(), currentWindowWidth/2.0f - 210.0f, currentWindowHeight/2.0f + 100.0f, 5.0f,
-                   glm::vec3(0.8f, 0.8f, 1.0f));
+        // ---- Centered headline and score ----
+        std::string message    = (gameState == GameState::GAME_OVER) ? "GAME OVER" : "YOU WON!";
+        std::string scoreText  = "SCORE: " + std::to_string(playerScore);
+
+        // Headline
+        float headlineScale = 10.0f;
+        float headlineWidth = getTextWidth(message.c_str(), headlineScale);
+        float headlineX     = (currentWindowWidth - headlineWidth) * 0.5f;
+        float headlineY     = currentWindowHeight * 0.25f;
+        renderText(message.c_str(), headlineX, headlineY, headlineScale, glm::vec3(1.0f, 0.0f, 0.0f));
+
+        // Score text just below headline
+        float scoreScale = 8.0f;
+        float scoreWidth = getTextWidth(scoreText.c_str(), scoreScale);
+        float scoreX     = (currentWindowWidth - scoreWidth) * 0.5f;
+        float scoreY     = headlineY + 130.0f; // spacing
+        renderText(scoreText.c_str(), scoreX, scoreY, scoreScale, glm::vec3(1.0f, 1.0f, 0.0f));
+
+        // ---- Render interactive buttons ----
+        for (const auto& button : gameOverButtons) {
+            renderText(button.text.c_str(), button.pixelX, button.pixelY, button.scale, button.color);
+        }
         return;
     }
 
@@ -1693,30 +2024,35 @@ static void renderGame() {
         backgroundShader->use();
         backgroundShader->setFloat("time", g_time);
         backgroundShader->setFloat("alpha", 1.0f);
+        backgroundShader->setInt("currentLevel", currentLevel);
+        backgroundShader->setInt("maxLevel", maxLevel);
 
         glActiveTexture(GL_TEXTURE0);
         glBindVertexArray(g_backgroundVAO);
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
 
-        // Render level complete text
-        std::string message = "LEVEL " + std::to_string(currentLevel) + " COMPLETE!";
-        std::string bonusText = "SCORE: " + std::to_string(playerScore);
-        std::string nextLevelText = "ADVANCING TO LEVEL " + std::to_string(currentLevel + 1);
-        std::string tapText = "TAP TO CONTINUE";
-        
-        // Center the text (adjust positioning as needed for your screen)
-        float centerX = currentWindowWidth / 2.0f;
-        float centerY = currentWindowHeight / 2.0f;
-        
-        renderText(message.c_str(), centerX - 200.0f, centerY - 100.0f, 8.0f, 
-                glm::vec3(0.0f, 1.0f, 0.0f));
-        renderText(bonusText.c_str(), centerX - 100.0f, centerY - 20.0f, 6.0f, 
-                glm::vec3(1.0f, 1.0f, 0.0f));
-        renderText(nextLevelText.c_str(), centerX - 180.0f, centerY + 60.0f, 6.0f, 
-                glm::vec3(1.0f, 1.0f, 1.0f));
-        renderText(tapText.c_str(), centerX - 120.0f, centerY + 140.0f, 5.0f, 
-                glm::vec3(0.8f, 0.8f, 1.0f));
+        // ---- Level-complete overlay (virtual-pixel centering) ----
+        std::string message        = "LEVEL " + std::to_string(currentLevel) + " COMPLETE!";
+        std::string bonusText      = "SCORE: " + std::to_string(playerScore);
+        std::string nextLevelText  = "ADVANCING TO LEVEL " + std::to_string(currentLevel + 1);
+        std::string tapText        = "TAP TO CONTINUE";
+
+        const float centerX_vp = UI_VIRTUAL_WIDTH  * 0.5f;
+        const float centerY_vp = UI_VIRTUAL_HEIGHT * 0.5f;
+
+        auto drawCentered = [&](const std::string& txt, float y_vp, float scale,
+                                const glm::vec3& col)
+        {
+            float w = getTextWidth(txt.c_str(), scale);
+            float x = centerX_vp - w * 0.5f;
+            renderText(txt.c_str(), x, y_vp, scale, col);
+        };
+
+        drawCentered(message,       centerY_vp - 200.0f, 8.0f, glm::vec3(0.0f, 1.0f, 0.0f));
+        drawCentered(bonusText,     centerY_vp -  80.0f, 6.0f, glm::vec3(1.0f, 1.0f, 0.0f));
+        drawCentered(nextLevelText, centerY_vp +  40.0f, 6.0f, glm::vec3(1.0f, 1.0f, 1.0f));
+        drawCentered(tapText,       centerY_vp + 120.0f, 5.0f, glm::vec3(0.8f, 0.8f, 1.0f));
         
         return;
     }
@@ -1724,18 +2060,33 @@ static void renderGame() {
 
     // ============ PLAYING STATE - GAME RENDERING ==============
     // Render animated starfield background (like desktop version)
+    glBindFramebuffer(GL_FRAMEBUFFER, g_hdrFBO);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
     glDisable(GL_DEPTH_TEST);
     backgroundShader->use();
     backgroundShader->setFloat("time", g_time);
     backgroundShader->setFloat("alpha", 1.0f);
+    backgroundShader->setInt("currentLevel", currentLevel);
+    backgroundShader->setInt("maxLevel", maxLevel);
 
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(g_backgroundVAO);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
     
-    // Draw player with texture
-    drawQuad(playerPosition.x, playerPosition.y, 0.3f, 0.3f, 1.0f, 1.0f, 1.0f, 1.0f, nullptr, g_playerTexture);
+    // Draw player with texture and custom glow depending on movement
+    {
+        float glowIntensity = g_playerMoving ? 4.0f : 0.0f; // tweak value for visibility
+        playerShader->use();
+        playerShader->setVec3("glowColor", glm::vec3(1.0f, 0.5f, 0.0f));
+        playerShader->setFloat("glowIntensity", glowIntensity);
+        drawQuad(playerPosition.x, playerPosition.y, 0.3f, 0.3f,
+                 1.0f, 1.0f, 1.0f, 1.0f, playerShader, g_playerTexture);
+    }
+
+    // render lives
+    renderLives();
     
     // Draw enemies with instanced rendering (like desktop version)
     if(aliveEnemyPositions.size() > 0) {
@@ -1749,6 +2100,8 @@ static void renderGame() {
         enemyShader->setMat4("projection", projection);
         enemyShader->setMat4("view", view);
         enemyShader->setMat4("model", enemyModel);
+        enemyShader->setVec3("glowColor", glm::vec3(1.0f, 0.5f, 0.0f));
+        enemyShader->setFloat("glowIntensity", 4.0f);
         
         // Update instance buffer with enemy positions
         glBindBuffer(GL_ARRAY_BUFFER, g_instanceVBO);
@@ -1762,12 +2115,12 @@ static void renderGame() {
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, aliveEnemyPositions.size());
         glBindVertexArray(0);
     }
+
     
     // Draw bullets (using enemy shader like desktop)
     for (int i = 0; i < MAX_BULLETS; i++) {
         if (bullets[i].isActive) {
             enemyShader->use();
-            // Set matrices (same as desktop)
             
             // Create transformation matrix for this bullet (same as desktop)
             glm::mat4 bulletModel = glm::mat4(1.0f);
@@ -1779,9 +2132,14 @@ static void renderGame() {
             enemyShader->setMat4("projection", projection);
             enemyShader->setMat4("model", bulletModel);
             
-            // Bind bullet texture (same as desktop)
+            // Provide some glow but lower intensity than enemies
+            enemyShader->setVec3("glowColor", glm::vec3(1.0f, 0.8f, 0.2f));
+            enemyShader->setFloat("glowIntensity", 2.0f);
+            
+            // Bind bullet texture to texture unit 0 (texture_diffuse0)
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, g_bulletTexture);
+            
             glBindVertexArray(g_bulletVAO);
             glDrawArrays(GL_TRIANGLES, 0, 6);
             glBindVertexArray(0);
@@ -1789,18 +2147,29 @@ static void renderGame() {
     }
 
     // Draw Enemy Bullets
-    enemyShader->use();
     for (int i = 0; i < MAX_ENEMY_BULLETS; i++) {
         if (enemyBullets[i].isActive) {
+            enemyShader->use();
+            
             glm::mat4 bulletModel = glm::mat4(1.0f);
             bulletModel = glm::translate(bulletModel, glm::vec3(enemyBullets[i].position.x, enemyBullets[i].position.y, 0.0f));
             bulletModel = glm::scale(bulletModel, glm::vec3(0.4f, 0.4f, 1.0f));
+            
+            enemyShader->setMat4("view", view);
+            enemyShader->setMat4("projection", projection);
             enemyShader->setMat4("model", bulletModel);
 
+            // Bind enemy missile texture to texture unit 0 (texture_diffuse0)
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, g_enemyMissileTexture);
+            
             glBindVertexArray(g_enemyShotVAO);
             glDrawArrays(GL_TRIANGLES, 0, 6);
+            glBindVertexArray(0);
+
+            // Provide some glow but lower intensity than enemies
+            enemyShader->setVec3("glowColor", glm::vec3(0.8f, 0.2f, 1.0f));
+            enemyShader->setFloat("glowIntensity", 2.0f);
         }
     }
     
@@ -1826,7 +2195,7 @@ static void renderGame() {
 
             glm::mat4 explosionModel = glm::mat4(1.0f);
             explosionModel = glm::translate(explosionModel, glm::vec3(explosions[i].position.x, explosions[i].position.y, 0.0f));
-            explosionModel = glm::scale(explosionModel, glm::vec3(0.5f, 0.5f, 1.0f)); // Control explosion size
+            explosionModel = glm::scale(explosionModel, glm::vec3(0.3f, 0.3f, 1.0f)); // Control explosion size
             explosionShader->setMat4("model", explosionModel);
 
             glBindVertexArray(g_explosionVAO);
@@ -1844,6 +2213,35 @@ static void renderGame() {
     renderText(levelText.c_str(), 20.0f, 20.0f, 1.5f, glm::vec3(1.0f, 1.0f, 1.0f));
     renderText(scoreText.c_str(), 20.0f, 50.0f, 1.5f, glm::vec3(1.0f, 1.0f, 0.0f));
     renderText(livesText.c_str(), 20.0f, 80.0f, 1.5f, glm::vec3(1.0f, 0.0f, 0.0f));
+
+    // blur loop for glow effect
+    bool horizontal = true, first_iteration=true;
+    int amount=10;
+    blurShader->use();
+    for (unsigned int i=0; i<amount; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, g_pingpongFBO[horizontal]);
+        blurShader->setInt("horizontal", horizontal);
+        // glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, first_iteration ? g_colorBuffer[1] : g_pingpongColorBuffer[!horizontal]);
+        renderQuad();
+        horizontal = !horizontal;
+        if (first_iteration)
+            first_iteration = false;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // render quad with color buffer and tonemap HDR colors
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    hdrShader->use();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_colorBuffer[0]);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, g_colorBuffer[1]);
+    hdrShader->setFloat("exposure", 1.0f);
+    renderQuad();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+
     
     // ===== PAUSED OVERLAY =====
     if (gameState == GameState::PAUSED) {
@@ -1863,48 +2261,56 @@ static float getCurrentTime() {
 
 // JNI Functions
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeSetAssetManager(JNIEnv *env, jobject thiz, jobject assetManager) {
+Java_com_antash_invaders_MainActivity_nativeSetAssetManager(JNIEnv *env, jobject thiz, jobject assetManager) {
     g_assetManager = AAssetManager_fromJava(env, assetManager);
     LOGI("Asset manager set");
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnSurfaceCreated(JNIEnv *env, jobject thiz) {
-    LOGI("Surface created");
+Java_com_antash_invaders_MainActivity_nativeOnSurfaceCreated(JNIEnv *env, jobject thiz) {
+    LOGI("Surface created - was paused: %s", g_wasPaused ? "true" : "false");
     
     if (!g_isInitialized) {
-        srand(time(nullptr)); // Initialize random seed
+        // Check if this is first initialization or recreation after pause
+        bool isFirstInit = !g_wasPaused;
         
-        // Initialize audio manager once
-        if (audioManager == nullptr) {
-            audioManager = new AudioManager(16);
-            if (!audioManager->initialize(env, thiz)) {
-                LOGE("Failed to initialize audio manager!");
-                delete audioManager;
-                audioManager = nullptr;
+        if (isFirstInit) {
+            srand(time(nullptr)); // Initialize random seed only on first init
+            
+            // Initialize audio manager once
+            if (audioManager == nullptr) {
+                audioManager = new AudioManager(16);
+                if (!audioManager->initialize(env, thiz)) {
+                    LOGE("Failed to initialize audio manager!");
+                    delete audioManager;
+                    audioManager = nullptr;
+                } else {
+                    // Load sound effects from assets
+                    audioManager->loadSound("hit", "audio/Retro Explosion Short 01.wav");
+                    audioManager->loadSound("laser", "audio/Retro Gun Laser SingleShot 01.wav");
+                    audioManager->loadSound("explosion", "audio/Retro Impact LoFi 09.wav");
+                    // Load background music
+                    audioManager->loadMusic("bgm", "audio/background1.wav");
+                    LOGI("Audio system loaded successfully (initial)");
+                }
             } else {
-                // Load sound effects from assets
-                audioManager->loadSound("hit", "audio/Retro Explosion Short 01.wav");
-                audioManager->loadSound("laser", "audio/Retro Gun Laser SingleShot 01.wav");
-                audioManager->loadSound("explosion", "audio/Retro Impact LoFi 09.wav");
-                // Load background music
-                audioManager->loadMusic("bgm", "audio/background1.wav");
-                LOGI("Audio system loaded successfully (initial)");
+                LOGI("Reusing existing AudioManager instance");
             }
+            
+            // Initialize level system only on first run
+            initializeLevel(currentLevel);
+            LOGI("Level system initialized - Starting at level %d", currentLevel);
+            recalculateFormationLayout();
         } else {
-            LOGI("Reusing existing AudioManager instance");
+            LOGI("Recreating OpenGL context after pause/resume");
         }
         
+        // Always reinitialize OpenGL resources (shaders, textures, VAOs, etc.)
         g_isInitialized = initializeOpenGL();
         g_lastTime = getCurrentTime();
 
-        // Initialize level system
-        initializeLevel(currentLevel);
-        LOGI("Level system initialized - Starting at level %d", currentLevel);
-        recalculateFormationLayout();
-
-        // Start background music only once
-        if (audioManager && !g_musicStarted) {
+        // Start background music only on first initialization
+        if (audioManager && !g_musicStarted && isFirstInit) {
             audioManager->playMusic("bgm", 0.6f); // Start at menu volume
             g_musicStarted = true;
         }
@@ -1920,7 +2326,7 @@ Java_com_example_invaders_MainActivity_nativeOnSurfaceCreated(JNIEnv *env, jobje
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnSurfaceChanged(JNIEnv *env, jobject thiz, 
+Java_com_antash_invaders_MainActivity_nativeOnSurfaceChanged(JNIEnv *env, jobject thiz,
                                                              jint width, jint height) {
     LOGI("Surface changed: %dx%d", width, height);
     
@@ -1930,13 +2336,66 @@ Java_com_example_invaders_MainActivity_nativeOnSurfaceChanged(JNIEnv *env, jobje
     
     glViewport(0, 0, width, height);
 
+    // --------------------------------------------------
+    // Resize framebuffer attachments (HDR and ping-pong) to the
+    // new surface dimensions so the post-processing textures keep
+    // full resolution and avoid scaling/pixelation artefacts.
+    // --------------------------------------------------
+    if (g_hdrFBO != 0 && g_colorBuffer[0] != 0) {
+        for (int i = 0; i < 2; ++i) {
+            glBindTexture(GL_TEXTURE_2D, g_colorBuffer[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, g_screenWidth, g_screenHeight, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+        }
+
+        // Resize depth renderbuffer attached to HDR FBO
+        if (g_rboDepth != 0) {
+            glBindRenderbuffer(GL_RENDERBUFFER, g_rboDepth);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, g_screenWidth, g_screenHeight);
+            glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        }
+    }
+
+    // Resize ping-pong colour buffers used for Gaussian blur
+    if (g_pingpongColorBuffer[0] != 0) {
+        for (int i = 0; i < 2; ++i) {
+            glBindTexture(GL_TEXTURE_2D, g_pingpongColorBuffer[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, g_screenWidth, g_screenHeight, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+        }
+    }
+
+    // Reset texture binding
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     // Update current window dimensions for text rendering
     currentWindowWidth = width;
     currentWindowHeight = height;
     
-    // Reinitialize menu buttons with correct dimensions
-    if (g_isInitialized) {
+    // --------------------------------------------------
+    // Recompute UI virtual-canvas mapping (must happen BEFORE
+    // we lay out any UI elements so bounds are correct)
+    // --------------------------------------------------
+    {
+        float windowAspect  = (float)width  / (float)height;
+        float designAspect  = UI_VIRTUAL_WIDTH / UI_VIRTUAL_HEIGHT;
+
+        if (windowAspect > designAspect) {
+            // Screen is wider than design – fit to height and pillar-box
+            uiScale   = (float)height / UI_VIRTUAL_HEIGHT;
+            uiOffsetX = (width - UI_VIRTUAL_WIDTH * uiScale) * 0.5f;
+            uiOffsetY = 0.0f;
+        } else {
+            // Screen is taller/narrower – fit to width and letter-box
+            uiScale   = (float)width / UI_VIRTUAL_WIDTH;
+            uiOffsetX = 0.0f;
+            uiOffsetY = (height - UI_VIRTUAL_HEIGHT * uiScale) * 0.5f;
+        }
+    }
+
+    // Reinitialize buttons for current state (after uiScale is ready)
+    if (gameState == GameState::MENU) {
         initMenuButtons();
+    } else if (gameState == GameState::GAME_OVER || gameState == GameState::GAME_WON) {
+        initGameOverButtons();
     }
 
     // Update enemy spacing and formation start based on new screen dimensions
@@ -1944,11 +2403,10 @@ Java_com_example_invaders_MainActivity_nativeOnSurfaceChanged(JNIEnv *env, jobje
     initializeEnemies();
 
     glViewport(0, 0, width, height);
-
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnDrawFrame(JNIEnv *env, jobject thiz) {
+Java_com_antash_invaders_MainActivity_nativeOnDrawFrame(JNIEnv *env, jobject thiz) {
     if (!g_isInitialized) return;
     
     // Calculate delta time
@@ -1963,7 +2421,7 @@ Java_com_example_invaders_MainActivity_nativeOnDrawFrame(JNIEnv *env, jobject th
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnTouchDown(JNIEnv *env, jobject thiz, 
+Java_com_antash_invaders_MainActivity_nativeOnTouchDown(JNIEnv *env, jobject thiz,
                                                         jfloat x, jfloat y) {
     // Java is already passing normalized coordinates (-1 to 1)
     float ndcX = x;
@@ -1980,10 +2438,9 @@ Java_com_example_invaders_MainActivity_nativeOnTouchDown(JNIEnv *env, jobject th
             if (button.text == "CLICK TO START" &&
                 ndcX >= button.bounds.x && ndcX <= button.bounds.z &&
                 ndcY >= button.bounds.y && ndcY <= button.bounds.w) {
-                
-                gameState = GameState::PLAYING;
+                // Fresh game session
+                resetGame();
                 LOGI("Starting game!");
-                updateBackgroundMusicForState();
                 break;
             }
 
@@ -1993,6 +2450,15 @@ Java_com_example_invaders_MainActivity_nativeOnTouchDown(JNIEnv *env, jobject th
                 ndcY >= button.bounds.y && ndcY <= button.bounds.w) {
                 LOGI("Leaderboard button tapped – opening leaderboard UI");
                 showLeaderboard();
+                break;
+            }
+
+            // Quit game tap
+            if (button.text == "QUIT GAME" &&
+                ndcX >= button.bounds.x && ndcX <= button.bounds.z &&
+                ndcY >= button.bounds.y && ndcY <= button.bounds.w) {
+                LOGI("Quit button tapped – closing application");
+                quitGame();
                 break;
             }
         }
@@ -2015,19 +2481,42 @@ Java_com_example_invaders_MainActivity_nativeOnTouchDown(JNIEnv *env, jobject th
         g_touchY = ndcY;
         g_shouldShoot = true; // Shoot when touching
         
-        LOGI("Touch start - Initial: %.2f, Player start: %.2f", g_initialTouchX, g_playerStartX);
+        LOGI("Touch start - Initial: %.2f, Player start: %.2f)", g_initialTouchX, g_playerStartX);
     } 
     else if (gameState == GameState::GAME_OVER || gameState == GameState::GAME_WON) {
-        // Restart game with level system (like R key on desktop)
-        resetGame(); // This will reset to level 1 and call initializeLevel(1)
-        LOGI("Game restarted via touch!");
-        updateBackgroundMusicForState();
+        bool handled = false;
+        for (auto &button : gameOverButtons) {
+            if (ndcX >= button.bounds.x && ndcX <= button.bounds.z &&
+                ndcY >= button.bounds.y && ndcY <= button.bounds.w) {
+                if (button.text == "LEADERBOARD") {
+                    showLeaderboard();
+                    handled = true;
+                } else if (button.text == "RESTART") {
+                    resetGame();
+                    handled = true;
+                } else if (button.text == "MAIN MENU") {
+                    resetGame();            // ensure fresh stats
+                    gameState = GameState::MENU;
+                    initMenuButtons();
+                    updateBackgroundMusicForState();
+                    handled = true;
+                }
+                break;
+            }
+        }
+
+        // If tap didn't hit a button, restart the game by default
+        if (!handled) {
+            resetGame();
+            LOGI("Game restarted via touch!");
+            updateBackgroundMusicForState();
+        }
     }
 }
 
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnTouchMove(JNIEnv *env, jobject thiz, 
+Java_com_antash_invaders_MainActivity_nativeOnTouchMove(JNIEnv *env, jobject thiz,
                                                         jfloat x, jfloat y) {
     if (gameState == GameState::PLAYING) {
         // Java is already passing normalized coordinates (-1 to 1) - same as TouchDown
@@ -2042,43 +2531,80 @@ Java_com_example_invaders_MainActivity_nativeOnTouchMove(JNIEnv *env, jobject th
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnTouchUp(JNIEnv *env, jobject thiz, 
+Java_com_antash_invaders_MainActivity_nativeOnTouchUp(JNIEnv *env, jobject thiz,
                                                       jfloat x, jfloat y) {
     g_isTouching = false;
     LOGI("Touch up: (%.2f, %.2f)", x, y);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnPause(JNIEnv *env, jobject thiz) {
-    LOGI("Game paused");
+Java_com_antash_invaders_MainActivity_nativeOnPause(JNIEnv *env, jobject thiz) {
+    LOGI("Game paused - current state: %d", (int)gameState);
+    
+    // Store the current game state before pausing
+    g_savedGameState = gameState;
+    g_wasPaused = true;
+    
+    // Only change state to PAUSED if it was PLAYING
     if (gameState == GameState::PLAYING) {
         gameState = GameState::PAUSED;
     }
-    if (audioManager && g_musicStarted) {
+    
+    // Pause music but keep g_musicStarted flag to resume later
+    if (audioManager) {
         audioManager->stopMusic();
-        g_musicStarted = false;
     }
-    // Mark GL context as lost so we rebuild resources on resume
+    
+    // Mark that OpenGL context will be lost and needs recreation
+    // This allows nativeOnSurfaceCreated to reinitialize OpenGL resources
+    // while preserving game state
     g_isInitialized = false;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnResume(JNIEnv *env, jobject thiz) {
-    LOGI("Game resumed");
+Java_com_antash_invaders_MainActivity_nativeOnResume(JNIEnv *env, jobject thiz) {
+    LOGI("Game resumed - was paused: %s, saved state: %d, current state: %d", 
+         g_wasPaused ? "true" : "false", (int)g_savedGameState, (int)gameState);
+    
     g_lastTime = getCurrentTime();
 
-    if (gameState == GameState::PAUSED) {
-        gameState = GameState::PLAYING;
-        // Restart music
-        if (audioManager && !g_musicStarted) {
-            audioManager->playMusic("bgm", 0.6f);
-            g_musicStarted = true;
+    // If we were paused due to app minimization, restore the saved state
+    if (g_wasPaused) {
+        // If the saved state was PLAYING and current is PAUSED, restore to PLAYING
+        if (g_savedGameState == GameState::PLAYING && gameState == GameState::PAUSED) {
+            gameState = GameState::PLAYING;
         }
+        // For other states (MENU, GAME_OVER, etc.), keep them as they were
+        
+        g_wasPaused = false; // Reset the flag
+    }
+
+    // Resume music if it was previously playing
+    if (audioManager && g_musicStarted) {
+        // Determine volume based on current game state
+        float volume = 0.6f; // Default menu volume
+        switch (gameState) {
+            case GameState::PLAYING:
+            case GameState::PAUSED:
+                volume = 0.4f;
+                break;
+            case GameState::LEVEL_COMPLETE:
+                volume = 0.2f;
+                break;
+            case GameState::GAME_OVER:
+            case GameState::GAME_WON:
+                volume = 0.3f;
+                break;
+            default:
+                volume = 0.6f;
+                break;
+        }
+        audioManager->playMusic("bgm", volume);
     }
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_invaders_MainActivity_nativeOnDestroy(JNIEnv *env, jobject thiz) {
+Java_com_antash_invaders_MainActivity_nativeOnDestroy(JNIEnv *env, jobject thiz) {
     LOGI("Game destroyed");
     if (audioManager && g_musicStarted) {
         audioManager->stopMusic();
@@ -2134,6 +2660,18 @@ Java_com_example_invaders_MainActivity_nativeOnDestroy(JNIEnv *env, jobject thiz
         g_explosionVBO = 0;
     }
 
+    // Delete ping-pong FBOs / color buffers and reset their first elements to 0
+    if (g_pingpongFBO[0]) {
+        glDeleteFramebuffers(2, g_pingpongFBO);
+        g_pingpongFBO[0] = 0;
+        g_pingpongFBO[1] = 0;
+    }
+    if (g_pingpongColorBuffer[0]) {
+        glDeleteTextures(2, g_pingpongColorBuffer);
+        g_pingpongColorBuffer[0] = 0;
+        g_pingpongColorBuffer[1] = 0;
+    }
+
     if (g_playerTexture) {
         glDeleteTextures(1, &g_playerTexture);
         g_playerTexture = 0;
@@ -2151,6 +2689,12 @@ Java_com_example_invaders_MainActivity_nativeOnDestroy(JNIEnv *env, jobject thiz
         glDeleteTextures(1, &g_enemyMissileTexture);
         g_enemyMissileTexture = 0;
     }
+    
+    if (g_rboDepth) {
+        glDeleteRenderbuffers(1, &g_rboDepth);
+        g_rboDepth = 0;
+    }
+
     
     // Cleanup parallax textures
     for (const auto& layer : parallaxLayers) {
@@ -2173,12 +2717,18 @@ Java_com_example_invaders_MainActivity_nativeOnDestroy(JNIEnv *env, jobject thiz
     delete backgroundShader;
     delete textShader;
     delete parallaxShader;
+    delete blurShader;
+    delete hdrShader;
+    delete playerShader;
     enemyShader = nullptr;
     explosionShader = nullptr;
     backgroundShader = nullptr;
     textShader = nullptr;
     parallaxShader = nullptr;
     textShaderPtr = nullptr;
+    blurShader = nullptr;
+    hdrShader = nullptr;
+    playerShader = nullptr;
     
     // Cleanup audio manager
     if (audioManager) {
@@ -2226,3 +2776,32 @@ static void showLeaderboard() {
 // ... existing code ...
 // Inside game logic when Game Over or Game Won occurs, submit score
 // (add to appropriate sections further below)
+
+static void quitGame() {
+    if (!g_javaVM || !g_mainActivityObj) return;
+    JNIEnv* env = nullptr;
+    if (g_javaVM->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (g_javaVM->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    }
+
+    jclass activityCls = env->GetObjectClass(g_mainActivityObj);
+    if (!activityCls) return;
+
+    jmethodID finishMID = env->GetMethodID(activityCls, "finish", "()V");
+    if (finishMID) {
+        env->CallVoidMethod(g_mainActivityObj, finishMID);
+    }
+}
+
+static void vibratePhone(int durationMs) {
+    if (!g_javaVM || !g_mainActivityObj) return;
+    JNIEnv* env = nullptr;
+    if (g_javaVM->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    jclass cls = env->GetObjectClass(g_mainActivityObj);
+    if (!cls) return;
+    jmethodID method = env->GetMethodID(cls, "vibrateJNI", "(I)V");
+    if (method) {
+        env->CallVoidMethod(g_mainActivityObj, method, (jint)durationMs);
+    }
+}
+

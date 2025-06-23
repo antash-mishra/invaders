@@ -60,5 +60,5 @@ void main()
     vec3 finalColor = spaceColor + starColor * starField;
     
     FragColor = vec4(finalColor, alpha);
-    BrightColor = vec4(0.0, 0.0, 0.0, alpha); // No bloom for background
+    BrightColor = vec4(0.0, 0.0, 0.0, 1.0); // No bloom for background
 }
